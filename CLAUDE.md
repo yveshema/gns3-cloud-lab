@@ -116,14 +116,29 @@ idle than the VM saves — don't use one.
 - Custom GCE image to avoid every student uploading the OL9 qcow2 — not
   evaluated.
 
+## Confirmed on a live VM
+
+- **`qemu-kvm` is not a real package on `ubuntu-2404-lts-amd64`** — it's a
+  virtual name that `qemu-system-x86` provides. `apt-get install qemu-kvm`
+  resolves and installs `qemu-system-x86` fine (exit 0), but `dpkg -s
+  qemu-kvm` then fails since no package by that literal name was ever
+  installed. `provision.sh` now installs `qemu-system-x86` directly. Any
+  future package name in the apt list should be checked the same way
+  (`apt-cache policy <name>`, watch for `Candidate: (none)` with real
+  packages showing up in `dpkg -l` instead) rather than assumed installable
+  as-named.
+
 ## Needs live-VM validation
 
 `provision.sh` (branch `provision-script`) — verified here only via
 `shellcheck`, `bash -n`, and the version-comparison / `apt_install_one`
-logic exercised in isolation against stubbed `dpkg`/`apt-cache`/`apt-get`.
-Everything below needs a real VM:
+logic exercised in isolation against stubbed `dpkg`/`apt-cache`/`apt-get`,
+plus the one fix above from an actual failed run. Everything below still
+needs a real VM:
 
-- The whole script end-to-end, first boot and re-boot (sentinel path).
+- The whole script end-to-end, first boot and re-boot (sentinel path) —
+  not yet reached; the run that surfaced the qemu-kvm bug above stopped at
+  the first package in the loop.
 - `pipx install "gns3-server==2.2.61"` run as root with `PIPX_HOME` /
   `PIPX_BIN_DIR` set: pipx may refuse root installs outright and require
   `--global` instead (added pipx 1.4+, which may or may not honour
@@ -139,6 +154,7 @@ Everything below needs a real VM:
 - `vpcs -v` output — assumed to contain the literal substring `0.6.2`.
 - `getcap` output format — assumed `grep -q "cap_net_admin"` on its stdout
   is sufficient to confirm both capabilities were set.
-- Whether `qemu-kvm`, `dynamips`, `docker.io`, `git`, `build-essential`,
-  `libpcap-dev`, `pipx` all actually have candidates on
-  `ubuntu-2404-lts-amd64` (expected per the plan, not re-confirmed here).
+- Whether `dynamips`, `docker.io`, `git`, `build-essential`, `libpcap-dev`,
+  `pipx` all actually have candidates on `ubuntu-2404-lts-amd64` — `qemu-kvm`
+  didn't (see above), so these are no longer assumed good until the loop
+  actually reaches and clears each one.
