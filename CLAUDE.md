@@ -58,7 +58,16 @@ of trusting the exit code.
 
 **GNS3 config path:** derived from `expanduser("~")` of the user *running the
 process*, not the install location. `XDG_CONFIG_HOME` is not honoured. Lands
-in `~/.config/GNS3/2.2/`, projects in `~/GNS3/`.
+in `~/.config/GNS3/2.2/`, projects in `~/GNS3/`. **This path is shared by
+every GNS3 install on a machine, regardless of install method** — the
+plan's own §2.6 flags `--profile <name>` as the supported way to isolate
+settings from an existing install, specifically to prevent collisions. Not
+yet implemented: `gns3conf.py` currently writes straight to the
+unprofiled default path. Confirmed the hard way — on a machine with two
+real GNS3 installs (dnf and pipx) that had their configs deliberately kept
+isolated from each other, running `start` wrote into the dnf install's
+config anyway. `gns3conf.py` must adopt an isolated profile before this
+is safe to run again on a machine with any other real GNS3 install.
 
 **Networking:** `host = 0.0.0.0`, `auth = True`, console ports bounded (e.g.
 5000–5050). Firewall allows `tcp:3080,tcp:5000-5050` from the student's
@@ -132,6 +141,11 @@ idle than the VM saves — don't use one.
   a silent terminal that long has no way to tell "still working" from
   "stuck" — add a progress indicator (spinner, or a log line per poll
   interval) to those wait loops.
+- **`gns3conf.py` needs to use an isolated GNS3 `--profile`, not the
+  default config path.** Confirmed the hard way (see "GNS3 config path"
+  above): `start` wrote into a real, unrelated GNS3 install's config on a
+  machine that already had one. Until this lands, `start` isn't safe to
+  run on any machine with another real GNS3 install present.
 
 ## Confirmed on a live VM
 
