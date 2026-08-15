@@ -118,5 +118,72 @@ idle than the VM saves — don't use one.
 
 ## Needs live-VM validation
 
-Nothing written yet. Add an entry here whenever code is added that assumes
-GCP or GNS3-server behavior this container can't check.
+`provision.sh` — verified here only via `shellcheck`, `bash -n`, and the
+version-comparison / `apt_install_one` logic exercised in isolation against
+stubbed `dpkg`/`apt-cache`/`apt-get`. Everything below needs a real VM:
+
+- The whole script end-to-end, first boot and re-boot (sentinel path).
+- `pipx install "gns3-server==2.2.61"` run as root with `PIPX_HOME` /
+  `PIPX_BIN_DIR` set: pipx may refuse root installs outright and require
+  `--global` instead (added pipx 1.4+, which may or may not honour
+  `PIPX_HOME`/`PIPX_BIN_DIR` the same way) — the plan's design was never
+  actually run.
+- VPCS build paths: assumed `src/getopt.h` and `src/Makefile.linux` inside
+  the repo, output binary at `src/vpcs`, based on the plan's prose
+  description, not a verified directory listing.
+- uBridge build: assumed a top-level `make` with no target/config step
+  produces a binary named `ubridge` at the repo root.
+- `dynamips --version` output format — assumed to contain a bare `x.y.z`
+  extractable with `grep -oE '[0-9]+\.[0-9]+\.[0-9]+'`.
+- `vpcs -v` output — assumed to contain the literal substring `0.6.2`.
+- `getcap` output format — assumed `grep -q "cap_net_admin"` on its stdout
+  is sufficient to confirm both capabilities were set.
+- Whether `qemu-kvm`, `dynamips`, `docker.io`, `git`, `build-essential`,
+  `libpcap-dev`, `pipx` all actually have candidates on
+  `ubuntu-2404-lts-amd64` (expected per the plan, not re-confirmed here).
+
+`src/gns3_2620_lab/` (the wrapper) — 79 unit tests pass with every
+`gcloud`/HTTP/filesystem call mocked; confirmed for real in this container:
+package builds, `uv sync`/`uv tool install`/`uv tool uninstall` all work,
+the entry point runs, `--help` renders, and the missing-`gcloud` error path
+genuinely fires (there is no `gcloud` here). Everything below needs a real
+VM, a real gcloud install, and — for the GUI-side items — a real GNS3
+client on Windows/macOS:
+
+- **Biggest guess, `cli.py`'s `_remote_setup_command`:** the remote
+  `gns3_server.conf` written over SSH is assumed to be JSON shaped like
+  `{"Server": {"host": ..., "auth": ..., "console_start_port_range": ...}}`,
+  by analogy with `gns3_controller.conf`'s known JSON format. The plan's
+  §2.6/§3.3 notes describe server settings as `key = value` prose, which
+  could equally mean an INI file read by `configparser`. Never confirmed
+  against an actual gns3-server install — if wrong, `--start` will boot the
+  server with defaults (`auth = False`? wrong console range?) instead of
+  the intended config, and this would not be obviously visible from the
+  wrapper's side since `wait_for_http_ready` only checks that *something*
+  answers on :3080.
+- `gns3conf.gns3_gui_config_path()` — Windows (`%APPDATA%\GNS3\2.2`) and
+  macOS (`~/.config/GNS3/2.2`) paths are GNS3's documented layout, not
+  verified against a real install on either platform. Only the Linux
+  server-side path (§2.6 of the plan) was ever empirically confirmed, and
+  that's a different config file (`gns3_server.conf`, not `gns3_gui.conf`).
+- `gns3_gui.conf`'s JSON schema — `upsert_remote_server`'s
+  `Servers.remote_servers` list with `host`/`port`/`protocol`/`user`/
+  `password` keys is a best-effort guess at what the actual GNS3 GUI reads
+  on startup, not confirmed against a real client. If wrong, `--start`
+  will silently write a file the GUI ignores, and the student's step 6
+  ("configure the main server from the printed values") becomes load-
+  bearing rather than a formality.
+- `_remote_setup_command`'s `sudo usermod -aG kvm,docker` — assumes the
+  GCE guest-agent-created account has passwordless sudo (the GCP default,
+  but not verified in this repo).
+- `gcp.wait_for_http_ready`'s default path `/v2/version` — assumed to
+  exist and return a non-5xx status once the server is up; the actual
+  gns3-server 2.2.61 API surface wasn't checked.
+- `gcp.instance_describe`'s not-found detection (`"not found"` /
+  `"NOT_FOUND"` substring match on stderr) — the exact gcloud error text
+  for a missing instance wasn't captured from a real call.
+- `gcp.get_public_ipv4`'s default service, `api.ipify.org` — reachability
+  assumed, not tested from this container (no network egress here either).
+- The full `create` → `start` → `stop` → `start` cycle end-to-end,
+  including whether the firewall rule syntax
+  (`--rules=tcp:3080,tcp:5000-5020`) is accepted as written.
