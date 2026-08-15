@@ -160,20 +160,19 @@ the way confirmed most of what had only been designed, never run:
 - `qemu-system-x86`, `dynamips`, `docker.io`, `git`, `build-essential`,
   `libpcap-dev`, `pipx` all have real candidates on `ubuntu-2404-lts-amd64`
   and installed cleanly.
+- **Reboot idempotency** — `gcloud compute instances reset` with the
+  sentinel left in place correctly hit the fast path: `sentinel present ...
+  skipping install, running assertions only`, all four `OK`, exit 0. No
+  rebuild attempted.
 
 ## Needs live-VM validation
 
-`provision.sh` — the run above reused residual build state from earlier
-failed attempts (uBridge/VPCS were rebuilt from a `rm -rf` + fresh clone
-each time regardless, but the pipx venv already existed and correctly
-no-op'd rather than doing a true first-time install). What's *not* yet
-confirmed:
-
-- A genuinely clean run: delete the instance, recreate from scratch, one
-  pass through `provision.sh` with no prior state at all — the stronger
-  test from the plan's original test plan (§4, step 7), to prove this is
-  reproducible rather than accidentally working against leftover state.
-- Reboot / re-`--start` idempotency: the sentinel-present fast path
-  (`run_assertions` only, no rebuild) has not actually been exercised —
-  every run so far has had the sentinel removed first to force a full
-  reprovision while debugging.
+`provision.sh` — the only thing left: a genuinely clean run. Every run so
+far, including the successful one above, reused residual build state from
+earlier failed attempts (uBridge/VPCS were rebuilt from a `rm -rf` + fresh
+clone each time regardless, but the pipx venv already existed and
+correctly no-op'd rather than doing a true first-time install). Delete the
+instance, recreate from scratch, one pass through `provision.sh` with no
+prior state at all — the stronger test from the plan's original test plan
+(§4, step 7), to prove this is reproducible rather than accidentally
+working against leftover state.
