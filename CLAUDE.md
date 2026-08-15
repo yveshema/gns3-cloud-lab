@@ -148,6 +148,19 @@ idle than the VM saves — don't use one.
   a silent terminal that long has no way to tell "still working" from
   "stuck" — add a progress indicator (spinner, or a log line per poll
   interval) to those wait loops.
+- **`cmd_start`'s "no local record" error tells the user to run `--create`
+  even when the VM already exists in GCP** (just not created through this
+  tool — e.g., the instructor's own hand-built VM from the original
+  evaluation session, or a VM adopted after losing local state). Running
+  `--create` in that case just prints "already exists, nothing to create"
+  from `cmd_create`'s existence check, and `start` fails the same way
+  again — the suggested fix doesn't fix anything. This is also the
+  "adopt an existing instance" gap noted in the plan (§5.5, "does
+  `--create` belong in the tool"). Fix: either have `cmd_create` write the
+  state record on its "already exists" branch too (generate a fresh
+  password, ensure the firewall rule, save state, rather than a bare
+  no-op), or have `cmd_start` distinguish "doesn't exist yet" from "exists
+  but has no local record" and give correct guidance for each.
 
 ## Confirmed on a live VM
 
