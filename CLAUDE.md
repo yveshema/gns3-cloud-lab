@@ -212,33 +212,28 @@ Also confirmed in the process: `sudo usermod -aG kvm,docker` works —
 the GCE guest-agent-created account does have passwordless sudo, as
 assumed.
 
+**A real GNS3 desktop client, on Linux, successfully connected** using the
+`gns3_gui.conf` `start` wrote — confirming both `upsert_remote_server`'s
+`Servers.remote_servers` JSON schema (`host`/`port`/`protocol`/`user`/
+`password`) and the Linux config path are correct. This was the single
+biggest remaining unvalidated guess in the wrapper.
+
 ## Needs live-VM validation
 
 `provision.sh` — 79 unit tests pass in this container (mocked), and the
 above is now confirmed against a real VM. Nothing outstanding.
 
-`src/gns3_2620_lab/` (the wrapper) — `create`, `start`, `stop`, and a
-repeat `start` after `stop` are all confirmed against real GCP: the VM's
-external IP changed between the two `start` calls, the new IP was
-reachable, and the firewall/GUI-config refresh handled it correctly — the
-two-address-refresh scenario that's the wrapper's whole reason to exist.
-Not yet exercised: `status`, or `create` against an already-existing
-instance (the idempotent no-op branch). Remaining items, mostly on the
-GUI-config side:
+`src/gns3_2620_lab/` (the wrapper) — `create`, `start`, `stop`, a repeat
+`start` after `stop`, and a real GUI client connection are all confirmed
+against real GCP (above) — the VM's external IP changed between the two
+`start` calls, the new IP was reachable, the firewall/GUI-config refresh
+handled it correctly, and the client actually connected. Not yet
+exercised: `status`, or `create` against an already-existing instance (the
+idempotent no-op branch). What's left:
 
-- `gns3conf.gns3_gui_config_path()` — Windows (`%APPDATA%\GNS3\2.2`) and
-  macOS (`~/.config/GNS3/2.2`) paths are GNS3's documented layout, not
-  verified against a real install on either platform. The Linux path *is*
-  now exercised by `start` (it wrote a file), but nothing has confirmed
-  that a real GNS3 GUI reads it correctly on any platform yet.
-- `gns3_gui.conf`'s JSON schema — `upsert_remote_server`'s
-  `Servers.remote_servers` list with `host`/`port`/`protocol`/`user`/
-  `password` keys is a best-effort guess at what the actual GNS3 GUI reads
-  on startup. `start` wrote the file without error, but that only proves
-  the wrapper's own read/write round-trips correctly — not that the GUI
-  will pick it up. If wrong, the student's step 6 ("configure the main
-  server from the printed values") becomes load-bearing rather than a
-  formality. Needs an actual GNS3 client launch to confirm.
+- `gns3conf.gns3_gui_config_path()` on Windows (`%APPDATA%\GNS3\2.2`) and
+  macOS (`~/.config/GNS3/2.2`) — GNS3's documented layout, not verified on
+  either platform. Only Linux has a real client connection behind it.
 - `gcp.instance_describe`'s not-found detection (`"not found"` /
   `"NOT_FOUND"` substring match on stderr) — the exact gcloud error text
   for a missing instance wasn't captured from a real call; `create`'s
