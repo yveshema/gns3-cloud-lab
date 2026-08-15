@@ -65,16 +65,6 @@ in `~/.config/GNS3/2.2/`, projects in `~/GNS3/`.
 public IPv4 `/32` only. `console_host` is not set. No SSH tunnel — connects
 directly to the external IP. (Why the console range must stay open despite
 QEMU binding consoles to `127.0.0.1` on the VM is unresolved — see plan §2.7.)
-
-**Firewall scope is by public IP, not by device.** Anyone sharing the
-student's public IP (roommates on the same home router, others on the same
-campus/coffee-shop NAT) can also reach the open ports while the rule is
-active. The web UI (3080) is protected by `auth = True` plus a per-student
-random password regardless; the console ports have no second auth layer of
-their own — reachability alone is sufficient. Not a reason to hide the port
-numbers (the source-IP restriction is what's actually doing the work, and
-portscanning a range you can't route to accomplishes nothing) — but worth
-knowing before recommending this to students on shared/public networks.
 Public IP lookups must force IPv4 (`curl -4`); an IPv6 result breaks `/32`
 CIDR.
 
