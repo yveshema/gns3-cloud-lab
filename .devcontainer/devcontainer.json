@@ -1,0 +1,21 @@
+{
+    "name": "gns3-cloud-lab",
+    "build": { "dockerfile": "Dockerfile" },
+
+    "features": {
+      "ghcr.io/devcontainers/features/node:1": {},
+      "ghcr.io/va-h/devcontainers-features/uv:1": {}
+    },
+
+    "postCreateCommand": "npm install -g @anthropic-ai/claude-code",
+
+    "remoteUser": "vscode",
+
+    "mounts": [
+      "source=/gns3-cloud-plan.md,target=/workspaces/gns3-cloud-plan.md,type=bind,readonly",
+      "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
+      "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/vscode/.claude/CLAUDE.md,type=bind,readonly",
+      "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind",
+      "source=${localEnv:HOME}/.claude/projects/-storage-common-Documents-bcit-courses-networking-2620/memory,target=/home/vscode/.claude/projects/-workspaces-gns3-cloud-lab/memory,type=bind"
+    ]
+}

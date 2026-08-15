@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Environments / local config
+.env
+.env.*
+
+# Editors / OS
+.DS_Store
+*.swp
+
+# Logs
+*.log
