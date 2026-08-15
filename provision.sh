@@ -68,8 +68,14 @@ install_packages() {
     log "apt-get update"
     apt-get update
 
+    # qemu-kvm is not a real package on Ubuntu 24.04 — it exists only as a
+    # virtual name that qemu-system-x86 Provides. `apt-get install qemu-kvm`
+    # resolves and installs qemu-system-x86 fine (exit 0), but `dpkg -s
+    # qemu-kvm` then fails since no package by that literal name was ever
+    # installed, tripping apt_install_one's own post-install check. Request
+    # the real package name instead of the alias. Confirmed on a live VM.
     local pkg
-    for pkg in qemu-kvm dynamips docker.io git build-essential libpcap-dev pipx; do
+    for pkg in qemu-system-x86 dynamips docker.io git build-essential libpcap-dev pipx; do
         log "installing $pkg"
         apt_install_one "$pkg"
     done
