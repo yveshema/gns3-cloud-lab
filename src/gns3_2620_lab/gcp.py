@@ -277,6 +277,24 @@ def wait_for_status(
     return status
 
 
+def wait_for_external_ip(
+    ctx: GcpContext,
+    *,
+    timeout: float = 60,
+    poll_interval: float = 3,
+    sleep=time.sleep,
+    now=time.monotonic,
+) -> str | None:
+    deadline = now() + timeout
+    ip = instance_external_ip(ctx)
+    while ip is None:
+        if now() >= deadline:
+            return None
+        sleep(poll_interval)
+        ip = instance_external_ip(ctx)
+    return ip
+
+
 def ssh_run(ctx: GcpContext, command: str, *, timeout: float | None = 60) -> subprocess.CompletedProcess:
     # Each call is a fresh login shell (CLAUDE.md, §2.9) — callers that need
     # a group membership change to take effect must issue it as a separate

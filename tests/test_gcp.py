@@ -352,6 +352,38 @@ def test_wait_for_status_times_out(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# wait_for_external_ip
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_external_ip_returns_once_available(monkeypatch):
+    ips = iter([None, None, "34.1.2.3"])
+    monkeypatch.setattr(gcp, "instance_external_ip", lambda ctx: next(ips))
+    clock = {"t": 0.0}
+    result = gcp.wait_for_external_ip(
+        make_ctx(),
+        timeout=60,
+        poll_interval=1,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+    )
+    assert result == "34.1.2.3"
+
+
+def test_wait_for_external_ip_times_out_returns_none(monkeypatch):
+    monkeypatch.setattr(gcp, "instance_external_ip", lambda ctx: None)
+    clock = {"t": 0.0}
+    result = gcp.wait_for_external_ip(
+        make_ctx(),
+        timeout=5,
+        poll_interval=2,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+    )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
 # ssh_run
 # ---------------------------------------------------------------------------
 
