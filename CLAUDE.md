@@ -59,15 +59,17 @@ of trusting the exit code.
 **GNS3 config path:** derived from `expanduser("~")` of the user *running the
 process*, not the install location. `XDG_CONFIG_HOME` is not honoured. Lands
 in `~/.config/GNS3/2.2/`, projects in `~/GNS3/`. **This path is shared by
-every GNS3 install on a machine, regardless of install method** — the
-plan's own §2.6 flags `--profile <name>` as the supported way to isolate
-settings from an existing install, specifically to prevent collisions. Not
-yet implemented: `gns3conf.py` currently writes straight to the
-unprofiled default path. Confirmed the hard way — on a machine with two
-real GNS3 installs (dnf and pipx) that had their configs deliberately kept
-isolated from each other, running `start` wrote into the dnf install's
-config anyway. `gns3conf.py` must adopt an isolated profile before this
-is safe to run again on a machine with any other real GNS3 install.
+every GNS3 install on a machine, regardless of install method** — and
+`gns3conf.py` writing straight to it, unprofiled, is intentional and
+correct: a student's install has nothing else at that path to collide
+with, and the whole point of `start` is to configure the one GNS3 client
+they'll actually use. Confirmed for real: on a personal dev machine with
+two GNS3 installs (dnf and pipx) that had been deliberately kept isolated
+via separate profiles, running `start` wrote into the dnf install's
+default config — expected given the design, not a bug. `--profile <name>`
+(plan §2.6) is the way to isolate *your own* testing from a personal
+install if you don't want that; the tool itself should not add profile
+support, since it would change what students end up with.
 
 **Networking:** `host = 0.0.0.0`, `auth = True`, console ports bounded (e.g.
 5000–5050). Firewall allows `tcp:3080,tcp:5000-5050` from the student's
@@ -119,6 +121,11 @@ idle than the VM saves — don't use one.
   proof of a fresh build; use `uv tool install --force --no-cache .` and
   confirm `Building gns3-2620-lab...` / `Built gns3-2620-lab...` actually
   appear in the output before concluding a fix didn't work.
+- Before testing `start` on a personal machine that has its own real GNS3
+  install(s), back up `~/.config/GNS3/2.2/` first. `start` writing straight
+  to that default path is correct behavior for the tool (that's exactly
+  what a student's install needs) — it's testing on a machine that already
+  has something real there that needs the precaution, not the tool.
 
 ## Open questions (from plan §5, still unresolved)
 
@@ -141,11 +148,6 @@ idle than the VM saves — don't use one.
   a silent terminal that long has no way to tell "still working" from
   "stuck" — add a progress indicator (spinner, or a log line per poll
   interval) to those wait loops.
-- **`gns3conf.py` needs to use an isolated GNS3 `--profile`, not the
-  default config path.** Confirmed the hard way (see "GNS3 config path"
-  above): `start` wrote into a real, unrelated GNS3 install's config on a
-  machine that already had one. Until this lands, `start` isn't safe to
-  run on any machine with another real GNS3 install present.
 
 ## Confirmed on a live VM
 
