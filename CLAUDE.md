@@ -152,55 +152,67 @@ bugs were found and fixed along the way:
 
 The wrapper's `create` command also ran for real against GCP and
 succeeded: firewall rule created with the `--rules=tcp:3080,tcp:5000-5020`
-syntax as written, instance created with the bundled `provision.sh`
+syntax as written (since widened to 5050, not re-tested at the new value —
+same syntax, low risk), instance created with the bundled `provision.sh`
 correctly located via `importlib.resources`, `gcp.get_public_ipv4()`
 actually reached `api.ipify.org` and got a usable IP, local state written.
+
+`start` then also ran for real and succeeded end to end — this confirmed
+the two biggest guesses in the whole wrapper:
+
+- **`_remote_setup_command`'s `gns3_server.conf` JSON format was correct.**
+  `gns3server` started successfully with the written config and answered
+  on :3080.
+- **`gcp.wait_for_http_ready`'s default path, `/v2/version`, is real** —
+  returned a non-5xx status once the server was up, and the wrapper
+  correctly reported "ready."
+
+One more real bug was found and fixed along the way, in the wrapper this
+time rather than `provision.sh`:
+
+- **`_remote_launch_command` used `pgrep -f gns3server` to check whether
+  the server was already running before launching it — but the `ssh
+  --command` string passed to the remote shell necessarily contains the
+  literal text "gns3server" (the search pattern itself), and `pgrep -f`
+  matches against full command lines while only excluding its own PID, not
+  its parent shell.** It always self-matched, so the launch line never
+  ran — confirmed on the VM (`gns3server.log` never got created) and
+  reproduced locally (a bare `pgrep -fa gns3server` inside `bash -c "...
+  pgrep -fa gns3server ..."` matches the `bash -c` process itself). This
+  traces back to the plan's own original recipe (§3.3 suggested `pgrep -f
+  gns3server` verbatim), not something introduced independently, but
+  demonstrably broken. Fixed: a PID file (`kill -0` on a recorded PID)
+  instead, which can't self-match on command-line text.
+
+Also confirmed in the process: `sudo usermod -aG kvm,docker` works —
+the GCE guest-agent-created account does have passwordless sudo, as
+assumed.
 
 ## Needs live-VM validation
 
 `provision.sh` — 79 unit tests pass in this container (mocked), and the
 above is now confirmed against a real VM. Nothing outstanding.
 
-`src/gns3_2620_lab/` (the wrapper) — `create` is confirmed (above). Not yet
-exercised: `start`, `stop`, a repeat `start` (the two-address-refresh path
-that's the wrapper's whole reason to exist), or `create` against an
-already-existing instance (the idempotent no-op branch). For the GUI-side
-items, also needs a real GNS3 client on Windows/macOS:
+`src/gns3_2620_lab/` (the wrapper) — `create` and `start` are both
+confirmed (above). Not yet exercised: `stop`, a repeat `start` (the
+two-address-refresh path that's the wrapper's whole reason to exist), or
+`create` against an already-existing instance (the idempotent no-op
+branch). Remaining items, mostly on the GUI-config side:
 
-- **Biggest guess, `cli.py`'s `_remote_setup_command`:** the remote
-  `gns3_server.conf` written over SSH is assumed to be JSON shaped like
-  `{"Server": {"host": ..., "auth": ..., "console_start_port_range": ...}}`,
-  by analogy with `gns3_controller.conf`'s known JSON format. The plan's
-  §2.6/§3.3 notes describe server settings as `key = value` prose, which
-  could equally mean an INI file read by `configparser`. Never confirmed
-  against an actual gns3-server install — if wrong, `--start` will boot the
-  server with defaults (`auth = False`? wrong console range?) instead of
-  the intended config, and this would not be obviously visible from the
-  wrapper's side since `wait_for_http_ready` only checks that *something*
-  answers on :3080.
 - `gns3conf.gns3_gui_config_path()` — Windows (`%APPDATA%\GNS3\2.2`) and
   macOS (`~/.config/GNS3/2.2`) paths are GNS3's documented layout, not
-  verified against a real install on either platform. Only the Linux
-  server-side path (§2.6 of the plan) was ever empirically confirmed, and
-  that's a different config file (`gns3_server.conf`, not `gns3_gui.conf`).
+  verified against a real install on either platform. The Linux path *is*
+  now exercised by `start` (it wrote a file), but nothing has confirmed
+  that a real GNS3 GUI reads it correctly on any platform yet.
 - `gns3_gui.conf`'s JSON schema — `upsert_remote_server`'s
   `Servers.remote_servers` list with `host`/`port`/`protocol`/`user`/
   `password` keys is a best-effort guess at what the actual GNS3 GUI reads
-  on startup, not confirmed against a real client. If wrong, `--start`
-  will silently write a file the GUI ignores, and the student's step 6
-  ("configure the main server from the printed values") becomes load-
-  bearing rather than a formality.
-- `_remote_setup_command`'s `sudo usermod -aG kvm,docker` — assumes the
-  GCE guest-agent-created account has passwordless sudo (the GCP default,
-  but not verified in this repo).
-- `gcp.wait_for_http_ready`'s default path `/v2/version` — assumed to
-  exist and return a non-5xx status once the server is up; the actual
-  gns3-server 2.2.61 API surface wasn't checked.
+  on startup. `start` wrote the file without error, but that only proves
+  the wrapper's own read/write round-trips correctly — not that the GUI
+  will pick it up. If wrong, the student's step 6 ("configure the main
+  server from the printed values") becomes load-bearing rather than a
+  formality. Needs an actual GNS3 client launch to confirm.
 - `gcp.instance_describe`'s not-found detection (`"not found"` /
   `"NOT_FOUND"` substring match on stderr) — the exact gcloud error text
-  for a missing instance wasn't captured from a real call.
-- `gcp.get_public_ipv4`'s default service, `api.ipify.org` — reachability
-  assumed, not tested from this container (no network egress here either).
-- The full `create` → `start` → `stop` → `start` cycle end-to-end,
-  including whether the firewall rule syntax
-  (`--rules=tcp:3080,tcp:5000-5020`) is accepted as written.
+  for a missing instance wasn't captured from a real call; `create`'s
+  idempotent branch (instance already exists) hasn't been exercised.
