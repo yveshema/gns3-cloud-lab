@@ -116,6 +116,15 @@ idle than the VM saves — don't use one.
 - Custom GCE image to avoid every student uploading the OL9 qcow2 — not
   evaluated.
 
+## Backlog
+
+- `cli.py`'s synchronous operations (`create`, `start`, `stop` waiting on
+  `gcp.wait_for_status`/`wait_for_external_ip`/`wait_for_http_ready`) print
+  nothing while blocked, sometimes for a minute or more. A student watching
+  a silent terminal that long has no way to tell "still working" from
+  "stuck" — add a progress indicator (spinner, or a log line per poll
+  interval) to those wait loops.
+
 ## Confirmed on a live VM
 
 `provision.sh` completed end-to-end on a genuinely clean `n2-standard-4` /
