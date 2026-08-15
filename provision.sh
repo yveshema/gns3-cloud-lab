@@ -139,8 +139,14 @@ assert_vpcs() {
 }
 
 assert_dynamips() {
+    # dynamips doesn't recognize --version as a real flag: it prints the
+    # version banner followed by the full usage/help text and exits 1.
+    # Under `set -o pipefail` that exit code would propagate as the whole
+    # pipeline's status and kill the script via set -e before the checks
+    # below ever run — `|| true` defers to those checks instead of trusting
+    # dynamips's own exit code. Confirmed on a live VM.
     local version
-    version=$(dynamips --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    version=$(dynamips --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
     [ -n "$version" ] || fatal "could not parse dynamips --version output"
     printf '%s\n%s\n' "0.2.11" "$version" | sort -C -V \
         || fatal "dynamips $version is below the required floor 0.2.11"
