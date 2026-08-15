@@ -30,7 +30,8 @@ set -euo pipefail
 
 SENTINEL_DIR=/var/lib/gns3-2620-lab
 SENTINEL="$SENTINEL_DIR/provisioned"
-VPCS_VERSION=v0.6.2
+VPCS_TAG=v0.6.2
+VPCS_VERSION=0.6.2
 GNS3_SERVER_VERSION=2.2.61
 SRC_DIR=/usr/local/src
 
@@ -105,10 +106,10 @@ build_ubridge() {
 #      breaks the global `vpc` declared in a header (multiple definitions).
 # ---------------------------------------------------------------------------
 build_vpcs() {
-    log "building VPCS $VPCS_VERSION from source"
+    log "building VPCS $VPCS_TAG from source"
     rm -rf "$SRC_DIR/vpcs"
     git clone https://github.com/GNS3/vpcs.git "$SRC_DIR/vpcs"
-    git -C "$SRC_DIR/vpcs" checkout "$VPCS_VERSION"
+    git -C "$SRC_DIR/vpcs" checkout "$VPCS_TAG"
 
     : > "$SRC_DIR/vpcs/src/getopt.h"
     make -C "$SRC_DIR/vpcs/src" -f Makefile.linux CC="gcc -fcommon"
