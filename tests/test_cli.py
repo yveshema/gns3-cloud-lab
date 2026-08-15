@@ -371,3 +371,26 @@ def test_remote_setup_command_embeds_valid_json_config():
 def test_remote_setup_command_uses_single_quoted_heredoc_delimiter():
     command = cli._remote_setup_command(user="admin", password="pw")
     assert "<<'GNS3_SERVER_CONF_EOF'" in command
+
+
+# ---------------------------------------------------------------------------
+# _remote_launch_command
+# ---------------------------------------------------------------------------
+
+
+def test_remote_launch_command_does_not_use_pgrep():
+    # Regression test: `pgrep -f gns3server` matches the invoking shell's
+    # own command line (which necessarily contains the literal text
+    # "gns3server", the pattern itself) and only excludes pgrep's own PID,
+    # not its parent shell — so it always self-matches and the launch line
+    # never runs. Confirmed on a live VM: gns3server.log never got created.
+    command = cli._remote_launch_command()
+    assert "pgrep" not in command
+
+
+def test_remote_launch_command_uses_a_pid_file():
+    command = cli._remote_launch_command()
+    assert "gns3server.pid" in command
+    assert "kill -0" in command
+    assert "setsid nohup gns3server" in command
+    assert "echo $!" in command

@@ -123,9 +123,21 @@ def _remote_launch_command() -> str:
     # Separate --command call from _remote_setup_command: group membership
     # from usermod only applies to a new login, and every --command
     # invocation is a fresh one (CLAUDE.md, §2.9).
+    #
+    # A PID file, not `pgrep -f gns3server`: the ssh --command string is
+    # itself the invoking shell's full command line, and it necessarily
+    # contains the literal text "gns3server" (the search pattern). `pgrep
+    # -f` matches against full command lines and only excludes pgrep's own
+    # PID, not its parent shell — so it always self-matches and the launch
+    # never runs. Confirmed on a live VM (gns3server.log never got
+    # created) and reproduced locally. `kill -0` checks the recorded PID is
+    # still alive without matching on command-line text at all.
     return (
-        "pgrep -f gns3server >/dev/null 2>&1 "
-        "|| setsid nohup gns3server </dev/null >~/gns3server.log 2>&1 &"
+        'if [ -f ~/gns3server.pid ] && kill -0 "$(cat ~/gns3server.pid)" 2>/dev/null; then '
+        "exit 0; "
+        "fi; "
+        "setsid nohup gns3server </dev/null >~/gns3server.log 2>&1 & "
+        "echo $! > ~/gns3server.pid"
     )
 
 
