@@ -24,11 +24,14 @@ DEFAULT_INSTANCE = "gns3-lab"
 DEFAULT_ZONE = "us-west1-b"
 DEFAULT_MACHINE_TYPE = "n2-standard-4"
 DEFAULT_TAG = "gns3"
-FIREWALL_PORTS = ["tcp:3080", "tcp:5000-5020"]
 SERVER_PORT = 3080
 GUI_USER = "admin"
 CONSOLE_PORT_START = 5000
-CONSOLE_PORT_END = 5020
+CONSOLE_PORT_END = 5050
+# Single source of truth for the console range: FIREWALL_PORTS is derived
+# from CONSOLE_PORT_START/END rather than a separately hardcoded string, so
+# the two can't drift out of sync with each other.
+FIREWALL_PORTS = [f"tcp:{SERVER_PORT}", f"tcp:{CONSOLE_PORT_START}-{CONSOLE_PORT_END}"]
 
 
 def build_parser() -> argparse.ArgumentParser:

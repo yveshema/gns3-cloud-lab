@@ -28,6 +28,21 @@ def isolated_state(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# module constants
+# ---------------------------------------------------------------------------
+
+
+def test_firewall_ports_matches_console_range_constants():
+    # Regression guard: FIREWALL_PORTS must stay derived from
+    # CONSOLE_PORT_START/END, not a second hardcoded copy of the range that
+    # can silently drift out of sync with it.
+    assert cli.FIREWALL_PORTS == [
+        f"tcp:{cli.SERVER_PORT}",
+        f"tcp:{cli.CONSOLE_PORT_START}-{cli.CONSOLE_PORT_END}",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
 
@@ -364,8 +379,8 @@ def test_remote_setup_command_embeds_valid_json_config():
     assert payload["Server"]["auth"] is True
     assert payload["Server"]["user"] == "admin"
     assert payload["Server"]["password"] == "p@ss"
-    assert payload["Server"]["console_start_port_range"] == 5000
-    assert payload["Server"]["console_end_port_range"] == 5020
+    assert payload["Server"]["console_start_port_range"] == cli.CONSOLE_PORT_START
+    assert payload["Server"]["console_end_port_range"] == cli.CONSOLE_PORT_END
 
 
 def test_remote_setup_command_uses_single_quoted_heredoc_delimiter():
