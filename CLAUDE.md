@@ -118,5 +118,27 @@ idle than the VM saves — don't use one.
 
 ## Needs live-VM validation
 
-Nothing written yet. Add an entry here whenever code is added that assumes
-GCP or GNS3-server behavior this container can't check.
+`provision.sh` (branch `provision-script`) — verified here only via
+`shellcheck`, `bash -n`, and the version-comparison / `apt_install_one`
+logic exercised in isolation against stubbed `dpkg`/`apt-cache`/`apt-get`.
+Everything below needs a real VM:
+
+- The whole script end-to-end, first boot and re-boot (sentinel path).
+- `pipx install "gns3-server==2.2.61"` run as root with `PIPX_HOME` /
+  `PIPX_BIN_DIR` set: pipx may refuse root installs outright and require
+  `--global` instead (added pipx 1.4+, which may or may not honour
+  `PIPX_HOME`/`PIPX_BIN_DIR` the same way) — the plan's design was never
+  actually run.
+- VPCS build paths: assumed `src/getopt.h` and `src/Makefile.linux` inside
+  the repo, output binary at `src/vpcs`, based on the plan's prose
+  description, not a verified directory listing.
+- uBridge build: assumed a top-level `make` with no target/config step
+  produces a binary named `ubridge` at the repo root.
+- `dynamips --version` output format — assumed to contain a bare `x.y.z`
+  extractable with `grep -oE '[0-9]+\.[0-9]+\.[0-9]+'`.
+- `vpcs -v` output — assumed to contain the literal substring `0.6.2`.
+- `getcap` output format — assumed `grep -q "cap_net_admin"` on its stdout
+  is sufficient to confirm both capabilities were set.
+- Whether `qemu-kvm`, `dynamips`, `docker.io`, `git`, `build-essential`,
+  `libpcap-dev`, `pipx` all actually have candidates on
+  `ubuntu-2404-lts-amd64` (expected per the plan, not re-confirmed here).
