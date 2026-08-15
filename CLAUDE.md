@@ -102,6 +102,14 @@ idle than the VM saves — don't use one.
   shellcheck, syntax checks, dry runs, unit tests on pure logic. State
   explicitly what couldn't be tested.
 - Never push. The user pushes.
+- When retesting a wrapper fix on the student-side machine: `uv tool
+  install --force .` doesn't reliably rebuild from current source on every
+  machine — one retest silently reinstalled a stale build (no `Building
+  gns3-2620-lab...` line in the output) even with `--force`, which
+  reproduced the exact bug that had just been fixed. `--force` alone isn't
+  proof of a fresh build; use `uv tool install --force --no-cache .` and
+  confirm `Building gns3-2620-lab...` / `Built gns3-2620-lab...` actually
+  appear in the output before concluding a fix didn't work.
 
 ## Open questions (from plan §5, still unresolved)
 
