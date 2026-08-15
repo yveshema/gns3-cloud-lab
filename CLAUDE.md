@@ -116,39 +116,47 @@ idle than the VM saves — don't use one.
 - Custom GCE image to avoid every student uploading the OL9 qcow2 — not
   evaluated.
 
+## Confirmed on a live VM
+
+`provision.sh` completed end-to-end on a genuinely clean `n2-standard-4` /
+`ubuntu-2404-lts-amd64` VM (deleted and recreated from scratch, not reused
+state from earlier debugging): apt installs, uBridge/VPCS source builds, a
+true first-time `pipx install` (not a no-op — "installed package
+gns3-server 2.2.61... gns3loopback, gns3server, gns3vmnet now globally
+available"), all four assertions, sentinel written, exit 0. Reboot
+idempotency also confirmed separately (`gcloud compute instances reset`
+with the sentinel left in place hit the fast path correctly). Three real
+bugs were found and fixed along the way:
+
+- **`qemu-kvm` is not a real package on `ubuntu-2404-lts-amd64`** — only a
+  virtual name `qemu-system-x86` provides. Fixed: install
+  `qemu-system-x86` directly.
+- **`assert_vpcs` searched for the git tag (`v0.6.2`), not the version
+  string `vpcs -v` actually prints (`0.6.2`, no `v`)** — never matched,
+  silently correct-looking to a human but failing the automated check.
+  Fixed: separate `VPCS_TAG` and `VPCS_VERSION` variables.
+- **`dynamips --version` isn't a real flag** — dynamips prints its usage
+  banner and exits 1. Under `pipefail` that killed the script via `set -e`
+  before `assert_dynamips`'s own error handling ever ran (no `FATAL:`
+  line, just an abrupt stop). Fixed: `|| true` on the assignment, deferring
+  to the existing `[ -n "$version" ]` check.
+
+The wrapper's `create` command also ran for real against GCP and
+succeeded: firewall rule created with the `--rules=tcp:3080,tcp:5000-5020`
+syntax as written, instance created with the bundled `provision.sh`
+correctly located via `importlib.resources`, `gcp.get_public_ipv4()`
+actually reached `api.ipify.org` and got a usable IP, local state written.
+
 ## Needs live-VM validation
 
-`provision.sh` — verified here only via `shellcheck`, `bash -n`, and the
-version-comparison / `apt_install_one` logic exercised in isolation against
-stubbed `dpkg`/`apt-cache`/`apt-get`. Everything below needs a real VM:
+`provision.sh` — 79 unit tests pass in this container (mocked), and the
+above is now confirmed against a real VM. Nothing outstanding.
 
-- The whole script end-to-end, first boot and re-boot (sentinel path).
-- `pipx install "gns3-server==2.2.61"` run as root with `PIPX_HOME` /
-  `PIPX_BIN_DIR` set: pipx may refuse root installs outright and require
-  `--global` instead (added pipx 1.4+, which may or may not honour
-  `PIPX_HOME`/`PIPX_BIN_DIR` the same way) — the plan's design was never
-  actually run.
-- VPCS build paths: assumed `src/getopt.h` and `src/Makefile.linux` inside
-  the repo, output binary at `src/vpcs`, based on the plan's prose
-  description, not a verified directory listing.
-- uBridge build: assumed a top-level `make` with no target/config step
-  produces a binary named `ubridge` at the repo root.
-- `dynamips --version` output format — assumed to contain a bare `x.y.z`
-  extractable with `grep -oE '[0-9]+\.[0-9]+\.[0-9]+'`.
-- `vpcs -v` output — assumed to contain the literal substring `0.6.2`.
-- `getcap` output format — assumed `grep -q "cap_net_admin"` on its stdout
-  is sufficient to confirm both capabilities were set.
-- Whether `qemu-kvm`, `dynamips`, `docker.io`, `git`, `build-essential`,
-  `libpcap-dev`, `pipx` all actually have candidates on
-  `ubuntu-2404-lts-amd64` (expected per the plan, not re-confirmed here).
-
-`src/gns3_2620_lab/` (the wrapper) — 79 unit tests pass with every
-`gcloud`/HTTP/filesystem call mocked; confirmed for real in this container:
-package builds, `uv sync`/`uv tool install`/`uv tool uninstall` all work,
-the entry point runs, `--help` renders, and the missing-`gcloud` error path
-genuinely fires (there is no `gcloud` here). Everything below needs a real
-VM, a real gcloud install, and — for the GUI-side items — a real GNS3
-client on Windows/macOS:
+`src/gns3_2620_lab/` (the wrapper) — `create` is confirmed (above). Not yet
+exercised: `start`, `stop`, a repeat `start` (the two-address-refresh path
+that's the wrapper's whole reason to exist), or `create` against an
+already-existing instance (the idempotent no-op branch). For the GUI-side
+items, also needs a real GNS3 client on Windows/macOS:
 
 - **Biggest guess, `cli.py`'s `_remote_setup_command`:** the remote
   `gns3_server.conf` written over SSH is assumed to be JSON shaped like
