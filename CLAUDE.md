@@ -217,11 +217,14 @@ assumed.
 `provision.sh` — 79 unit tests pass in this container (mocked), and the
 above is now confirmed against a real VM. Nothing outstanding.
 
-`src/gns3_2620_lab/` (the wrapper) — `create` and `start` are both
-confirmed (above). Not yet exercised: `stop`, a repeat `start` (the
-two-address-refresh path that's the wrapper's whole reason to exist), or
-`create` against an already-existing instance (the idempotent no-op
-branch). Remaining items, mostly on the GUI-config side:
+`src/gns3_2620_lab/` (the wrapper) — `create`, `start`, `stop`, and a
+repeat `start` after `stop` are all confirmed against real GCP: the VM's
+external IP changed between the two `start` calls, the new IP was
+reachable, and the firewall/GUI-config refresh handled it correctly — the
+two-address-refresh scenario that's the wrapper's whole reason to exist.
+Not yet exercised: `status`, or `create` against an already-existing
+instance (the idempotent no-op branch). Remaining items, mostly on the
+GUI-config side:
 
 - `gns3conf.gns3_gui_config_path()` — Windows (`%APPDATA%\GNS3\2.2`) and
   macOS (`~/.config/GNS3/2.2`) paths are GNS3's documented layout, not
