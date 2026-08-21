@@ -2,27 +2,18 @@
 #
 # provision.sh — GCE startup-script for the gns3-2620-lab VM.
 #
-# Runs as root, on every boot (GCE re-runs the startup-script metadata key on
-# every boot, not just the first), before any student user account exists —
-# see CLAUDE.md. Everything user-specific (group membership, GNS3 client
-# config, launching the server) happens later in the wrapper's `--start`,
-# not here.
+# Author: Yves R. Shema <yshema@bcit.ca>
+# Co-Authored-By: Claude <noreply@anthropic.com>
+#
+# Runs as root, on every boot (GCE re-runs the startup-script metadata key
+# on every boot, not just the first), before any user account exists —
+# everything user-specific (group membership, GNS3 client config, launching
+# the server) happens later in the wrapper's `--start`, not here.
 #
 # Idempotent via a sentinel file: the expensive build/install steps are
 # skipped on a second boot, but the assertions always run, so a corrupted
 # install is still caught rather than silently passing because the sentinel
 # was present.
-#
-# Design and the empirical findings behind it: CLAUDE.md and
-# /workspaces/gns3-cloud-plan.md. In particular:
-#   - apt fails atomically: a single `apt install a b c` aborts entirely if
-#     any package has no candidate, naming only one of them. Packages here
-#     are installed and verified one at a time (apt_install_one) instead.
-#   - VPCS must be built from source at tag v0.6.2 (default branch 0.8.4 is
-#     rejected by gns3-server; Ubuntu's packaged 0.5b2 is below the floor),
-#     with two independent, both-required workarounds for GCC 14 / GCC 10.
-#   - uBridge isn't packaged; built from GitHub master, capabilities set
-#     directly so no `ubridge` group is needed.
 #
 # Log: journalctl -u google-startup-scripts.service
 
@@ -74,7 +65,7 @@ install_packages() {
     # resolves and installs qemu-system-x86 fine (exit 0), but `dpkg -s
     # qemu-kvm` then fails since no package by that literal name was ever
     # installed, tripping apt_install_one's own post-install check. Request
-    # the real package name instead of the alias. Confirmed on a live VM.
+    # the real package name instead of the alias.
     local pkg
     for pkg in qemu-system-x86 dynamips docker.io git build-essential libpcap-dev pipx; do
         log "installing $pkg"
@@ -118,7 +109,7 @@ build_vpcs() {
 
 # ---------------------------------------------------------------------------
 # gns3-server — pipx-managed but installed system-wide (PIPX_HOME /
-# PIPX_BIN_DIR), not per-user, so it's on PATH regardless of which student
+# PIPX_BIN_DIR), not per-user, so it's on PATH regardless of which user
 # account ends up running it.
 # ---------------------------------------------------------------------------
 install_gns3_server() {
@@ -128,9 +119,9 @@ install_gns3_server() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertions — one per version/capability gate established in CLAUDE.md.
-# Exit non-zero on the first failure so a broken provision is visible in
-# journalctl instead of surfacing days later as a node that won't start.
+# Assertions — one per version/capability gate. Exit non-zero on the first
+# failure so a broken provision is visible in journalctl instead of
+# surfacing days later as a node that won't start.
 # ---------------------------------------------------------------------------
 assert_vpcs() {
     vpcs -v 2>&1 | grep -Fq "$VPCS_VERSION" \
@@ -144,7 +135,7 @@ assert_dynamips() {
     # Under `set -o pipefail` that exit code would propagate as the whole
     # pipeline's status and kill the script via set -e before the checks
     # below ever run — `|| true` defers to those checks instead of trusting
-    # dynamips's own exit code. Confirmed on a live VM.
+    # dynamips's own exit code.
     local version
     version=$(dynamips --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
     [ -n "$version" ] || fatal "could not parse dynamips --version output"

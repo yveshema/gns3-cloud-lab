@@ -1,9 +1,9 @@
 [project]
 name = "gns3-2620-lab"
 version = "0.1.0"
-description = "Per-student GCP fallback for BCIT networking-2620 GNS3 labs"
+description = "Per-user GCP fallback for BCIT networking-2620 GNS3 labs"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = ["psutil>=5"]
 
 [project.scripts]
 gns3-2620-lab = "gns3_2620_lab.cli:main"

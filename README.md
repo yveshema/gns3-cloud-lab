@@ -1,6 +1,6 @@
 # GNS3 Cloud Lab — BCIT Networking 2620
 
-A per-student, self-owned Google Cloud VM that runs GNS3, for students whose
+A per-user, self-owned Google Cloud VM that runs GNS3, for users whose
 laptop can't run it locally — most importantly Apple Silicon Macs, which
 can't run the x86 network-device images GNS3 relies on at all.
 
@@ -25,10 +25,7 @@ on Windows 11. Use this only if that's not an option for you.
      for that; don't be surprised by it.
    - Eligibility requires never having had a Google Cloud trial before.
 2. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install).
-3. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) —
-   used to install this tool, and works the same way on Windows, macOS, and
-   Linux.
-4. Create a named gcloud configuration and log in:
+3. Create a named gcloud configuration and log in:
    ```
    gcloud config configurations create bcit-2620
    gcloud auth login
@@ -40,14 +37,19 @@ on Windows 11. Use this only if that's not an option for you.
 ## 2. Install the wrapper
 
 ```
-uv tool install <REPO_URL>
+git clone <REPO_URL>
+cd gns3-2620-lab
+python install.py
 ```
 
 *(Ask your instructor for `<REPO_URL>` if it's not filled in above — this
 repo hasn't been published anywhere yet.)*
 
-This gives you a `gns3-2620-lab` command with four subcommands: `create`,
-`start`, `stop`, `status`.
+`install.py` bootstraps [uv](https://docs.astral.sh/uv/) automatically if
+it isn't already on your machine, then installs the `gns3-2620-lab`
+command with five subcommands: `scan`, `create`, `enroll`,
+`start`/`refresh`, `stop`, `status`. To uninstall later, run
+`python uninstall.py` from the same checkout.
 
 ## 3. Create your lab VM
 
@@ -134,4 +136,4 @@ At roughly $0.20/hour for the VM plus ~$3/month for the disk, a typical
 term's usage (a few hours a week) comes to well under $50 of your $300
 credit — there's no need to ration your usage session-to-session. The
 trial's 90-day clock, not the dollar amount, is the constraint most
-students will actually hit.
+users will actually hit.

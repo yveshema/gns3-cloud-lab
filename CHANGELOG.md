@@ -1,0 +1,128 @@
+# Changelog
+
+## 2026-08-21
+
+### Changed
+- `enroll` no longer discovers credentials against a VM it hasn't confirmed
+  is reachable. It now starts the VM first if it isn't already running
+  (sharing `start`'s boot-and-wait sequence via a new
+  `_boot_and_wait_for_ssh` helper), and refuses to enroll outright if SSH
+  never comes up, instead of silently falling through to
+  `_discover_or_generate_credentials`'s "nothing configured yet" branch.
+  That branch generates a fresh random password — correct for a genuinely
+  unconfigured VM, but wrong if the real reason was "couldn't reach it,"
+  since a subsequent `start` would then silently overwrite whatever real
+  credentials (e.g. an instructor's) were already on it.
+
+### Fixed
+- `_remote_setup_command` wrote `gns3_server.conf` as JSON; gns3-server
+  actually parses that file with `configparser` (INI), confirmed against
+  the real source at the exact pinned tag (`v2.2.61`) and reproduced
+  locally (`configparser.RawConfigParser().read_string()` on the generated
+  content raises `MissingSectionHeaderError`). gns3-server catches and
+  logs that parse failure rather than raising it, so the server started
+  anyway with every setting unset, silently falling back to its own
+  built-in defaults: auth off (the printed username/password were never
+  actually checked — only the per-session firewall rule was gating
+  access) and a console port range of 5000-10000, wider than the
+  firewall's 5000-5050. Confirmed live: the parse-failure line was in
+  `~/gns3server.log`, and `GET /v2/projects` succeeded with no
+  credentials. Now writes real INI. `_discover_or_generate_credentials`
+  (used by `enroll`) read the same file as JSON and had the same bug —
+  fixed to parse INI too.
+- `gns3conf.app_config_dir()` ignored `$XDG_CONFIG_HOME`, always using
+  `~/.config`. gns3-gui's real `configDirectory()` checks
+  `$XDG_CONFIG_HOME` first (verified against its source) — a user with
+  that variable set would have this tool patching a config file gns3-gui
+  never reads. Fixed to check it too.
+- `gcp.run()` let `subprocess.TimeoutExpired` propagate uncaught. Confirmed
+  live: a freshly-started VM's sshd went quiet for longer than
+  `wait_for_ssh_ready`'s 15s per-attempt timeout instead of refusing fast,
+  and the resulting exception crashed the whole `start` command with a raw
+  traceback instead of being retried like any other failed attempt — the
+  same `check=False` that suppresses a nonzero-exit `GcpError` did nothing
+  for a timeout, since `subprocess.run` raises before ever returning a
+  result to check. `run()` now catches the timeout: raises `GcpError` when
+  `check=True`, returns a failed `CompletedProcess` (returncode 124) when
+  `check=False`, so every existing `check=False` caller keeps working via
+  its usual returncode check instead of crashing.
+
+### Confirmed live (this session)
+- The INI fix above: `~/gns3server.log` showed a fresh "Load configuration
+  file" line after `start`, and an unauthenticated
+  `GET /v2/projects` returned `401 Unauthorized` instead of `200` — auth is
+  enforced. Notably, gns3-server picked this up without restarting: it
+  polls its config file for changes (`FileWatcher`, 1s interval) and
+  re-fetches config on every single request, so the already-running
+  process adopted the corrected file with no VM restart needed.
+
+## 2026-08-15
+
+### Confirmed against real GCP
+- `provision.sh`, `create`, `start`, a repeat `start` after `stop` with the
+  VM's external IP changed, `enroll`, and a real GNS3 desktop client
+  connecting on Linux — all confirmed working end-to-end.
+- Fixed: `qemu-kvm` is a virtual package on Ubuntu 24.04 (the real package
+  is `qemu-system-x86`); `assert_vpcs` was matching the git tag instead of
+  the version string; `assert_dynamips` needed `|| true` since
+  `dynamips --version` exits 1 and would otherwise kill the script under
+  `set -e`/`pipefail`.
+- Fixed: `_remote_launch_command`'s `pgrep -f gns3server` always
+  self-matched, because the ssh `--command` string itself contains the
+  literal text "gns3server" — replaced with a PID file.
+- Fixed: `patch_gui_conf` alone doesn't make the GUI connect to the remote
+  server. GNS3's "Remote main server host" field reads a separate
+  client-side `gns3_server.conf` (INI), not `gns3_gui.conf`'s
+  `Servers.remote_servers`. Added `patch_local_server_conf` to write it.
+- Enrolled VMs can be missing pieces `provision.sh` would have installed (a
+  real instructor-built VM had `kvm` but not `docker.io`); `start` detects
+  missing `kvm`/`docker` groups and reports exactly what's missing instead
+  of installing anything on a VM this tool didn't create.
+- Toggling "Enable local server" in the GUI and back doesn't stick — the
+  next `start`/`refresh` unconditionally re-patches both client config
+  files, so no manual recovery is needed.
+
+### Needs live-VM validation
+- `status`; `create`'s idempotent already-exists branch and `--dry-run`;
+  `scan`; the GUI-must-be-closed gate and config backup/restore around
+  `start`/`stop`; `install.py`/`uninstall.py`.
+- `_remote_launch_command`'s PATH-fallback resolution (`command -v`, then
+  `/usr/local/bin`, then `~/.local/bin`) — added after `wait_for_http_ready`
+  timed out on a real instructor-built VM; not yet confirmed as the actual
+  cause.
+- Progress feedback during `start`/`stop` wait loops, and gcloud's own
+  progress output on `create`/`start`/`stop` — unit-tested only, not yet
+  seen in a real terminal.
+- `gns3conf.gns3_gui_config_path()` on Windows/macOS — GNS3's documented
+  layout, unverified; only Linux has a real client connection behind it.
+- `gcp.instance_describe`'s not-found detection (`"not found"`/
+  `"NOT_FOUND"` substring match) — exact gcloud error text for a missing
+  instance not yet captured.
+- `gns3conf.gui_is_running()` — PID-file check and process-name match read
+  from GNS3's own source, never observed against a real running GUI.
+- `install.py`'s uv-bootstrap path — untested; only the already-have-uv
+  path is exercised by unit tests.
+- `gcp.instance_zone_name`'s assumption that `compute instances list`
+  reports zone as a full resource URL — standard GCE API shape, unconfirmed
+  against real output.
+
+### Open questions
+- Campus networks may filter 5000-5050 — untested, could force an
+  SSH-tunnel redesign of `start`.
+- The console-binding mechanism — why the port range must stay open despite
+  QEMU binding consoles to `127.0.0.1` on the VM — isn't understood.
+- Whether a `--snapshot`/backup verb is warranted before credit expiry
+  deletes a suspended project's resources.
+- Whether `create` belongs in the tool at all, vs. documenting VM creation
+  and having the tool adopt an existing one.
+- A custom GCE image to avoid every user uploading the OL9 qcow2 — not
+  evaluated.
+
+### Development gotchas
+- `uv tool install --force .` can silently reinstall a stale cached build
+  with no "Building..." line in the output; `install.py` always passes
+  `--force --no-cache` for this reason.
+- Reserved static IPs cost more idle than the VM saves — not used.
+- The GCE guest agent creates a local account named after whoever first
+  runs `gcloud compute ssh`; it doesn't exist at provision time, so nothing
+  in this tool depends on its name.
