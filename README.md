@@ -51,6 +51,11 @@ command with five subcommands: `scan`, `create`, `enroll`,
 `start`/`refresh`, `stop`, `status`. To uninstall later, run
 `python uninstall.py` from the same checkout.
 
+If nothing on your machine is already called `gclab`, install also sets it
+up as a shorter alias for `gns3-cloud-lab` — same command, less typing.
+(If something's already using that name, it's left alone and only the full
+`gns3-cloud-lab` command is installed.)
+
 ## 3. Create your lab VM
 
 ```

@@ -83,12 +83,14 @@ def main() -> int:
     # stale cached build with no "Building..." line in the output.
     result = subprocess.run([uv, "tool", "install", "--force", "--no-cache", "."], cwd=project_dir)
     if result.returncode == 0:
-        print("\nInstalled. Run 'gns3-cloud-lab -h' to get started.\n")
+        print("\nInstalled. Run 'gns3-cloud-lab -h' to get started.")
         # Imported from source directly rather than assuming the just-installed
         # console script is already on this process's PATH.
         sys.path.insert(0, str(project_dir / "src"))
-        from gns3_cloud_lab import setup_help
+        from gns3_cloud_lab import alias, setup_help
 
+        alias.create_if_available(uv)
+        print()
         setup_help.print_disclaimer()
         print()
         setup_help.print_setup_instructions()

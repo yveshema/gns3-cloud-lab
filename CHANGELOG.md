@@ -2,6 +2,29 @@
 
 ## 2026-08-21
 
+### Added
+- Renamed the package/command from `gns3-2620-lab` to `gns3-cloud-lab`,
+  matching the repo name. Console script, `pyproject.toml`, the Python
+  package (`gns3_2620_lab` → `gns3_cloud_lab`), the local state directory,
+  `provision.sh`'s sentinel directory, and every doc reference all moved
+  together. Existing installs: local state doesn't carry over
+  automatically — re-run `enroll` once after reinstalling (it correctly
+  rediscovers the VM's real credentials rather than generating new ones).
+- `install.py` now also sets up `gclab` as a short alias for
+  `gns3-cloud-lab`, but only if nothing on the machine already provides
+  that name. A real symlink on Linux/macOS; a tiny generated `.cmd` shim
+  on Windows, since real symlinks there need Developer Mode or admin
+  rights (verified against uv's own docs: Windows tool executables are
+  copied, not symlinked, for the same reason). Placed in whatever
+  directory `uv tool dir --bin` reports, so it's on PATH under the exact
+  same conditions the real command already is. No shell aliases, no
+  `.bashrc`/profile edits. `uninstall.py` removes it again, but only if it
+  still points at this tool's own command — never something else that
+  happens to be named `gclab`. Verified end-to-end on Linux (create,
+  reinstall no-ops, guard against a pre-existing `gclab`, uninstall
+  removes ours and leaves an unrelated one alone); the Windows `.cmd` path
+  is unit-tested but not yet run on a real Windows machine.
+
 ### Changed
 - `enroll` no longer discovers credentials against a VM it hasn't confirmed
   is reachable. It now starts the VM first if it isn't already running
