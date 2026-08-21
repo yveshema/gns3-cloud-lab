@@ -1,8 +1,18 @@
+import configparser
 import json
 
+import psutil
 import pytest
 
 from gns3_2620_lab import gns3conf
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_xdg_config_home(monkeypatch):
+    # So these tests are deterministic regardless of whether XDG_CONFIG_HOME
+    # happens to be set in whatever environment runs them; the one test that
+    # needs it set does so explicitly, overriding this.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -14,14 +24,14 @@ def test_app_config_dir_windows_uses_appdata(monkeypatch):
     # pathlib.Path is always PosixPath on this (Linux) test runner regardless
     # of the platform.system() mock, so it joins with "/" here — on real
     # Windows the same code produces a WindowsPath joined with "\". Assert on
-    # parts, not the OS-specific string form, per CLAUDE.md's Windows/macOS
-    # paths being unverified: this test can only prove the APPDATA value was
-    # used as the base and "GNS3" appended, not the real Windows rendering.
+    # parts, not the OS-specific string form: this test can only prove the
+    # APPDATA value was used as the base and "GNS3" appended, not the real
+    # Windows rendering.
     monkeypatch.setattr(gns3conf.platform, "system", lambda: "Windows")
-    monkeypatch.setenv("APPDATA", r"C:\Users\student\AppData\Roaming")
+    monkeypatch.setenv("APPDATA", r"C:\Users\user\AppData\Roaming")
     result = gns3conf.app_config_dir("GNS3")
     assert result.parts[-1] == "GNS3"
-    assert str(result.parent) == r"C:\Users\student\AppData\Roaming"
+    assert str(result.parent) == r"C:\Users\user\AppData\Roaming"
 
 
 def test_app_config_dir_windows_missing_appdata_raises(monkeypatch):
@@ -39,6 +49,17 @@ def test_app_config_dir_posix_uses_dot_config(monkeypatch, tmp_path, system_name
     assert result == tmp_path / ".config" / "GNS3"
 
 
+def test_app_config_dir_posix_honours_xdg_config_home(monkeypatch, tmp_path):
+    # gns3-gui's own configDirectory() checks $XDG_CONFIG_HOME before
+    # falling back to ~/.config — mirrored here so patched files land where
+    # the GUI actually reads from.
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
+    xdg_dir = tmp_path / "xdg-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_dir))
+    result = gns3conf.app_config_dir("GNS3")
+    assert result == xdg_dir / "GNS3"
+
+
 def test_gns3_gui_config_path_is_versioned(monkeypatch, tmp_path):
     monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
     monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
@@ -49,6 +70,94 @@ def test_wrapper_state_path_is_separate_from_gns3(monkeypatch, tmp_path):
     monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
     monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
     assert gns3conf.wrapper_state_path() == tmp_path / ".config" / "gns3-2620-lab" / "state.json"
+
+
+def test_gns3_gui_pid_path_sits_next_to_gui_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
+    assert gns3conf.gns3_gui_pid_path().parent == gns3conf.gns3_gui_config_path().parent
+
+
+def test_wrapper_gui_conf_backup_path_lives_in_wrapper_state_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
+    assert gns3conf.wrapper_gui_conf_backup_path().parent == gns3conf.wrapper_state_dir()
+
+
+def test_gns3_local_server_conf_path_sits_next_to_gui_config(monkeypatch, tmp_path):
+    # Same directory as gns3_gui.conf, but a different file — not to be
+    # confused with the *remote* gns3_server.conf cli.py writes over SSH
+    # onto the VM, which shares the filename but lives on a different
+    # machine in a different format (gns3conf module docstring).
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
+    assert gns3conf.gns3_local_server_conf_path().parent == gns3conf.gns3_gui_config_path().parent
+    assert gns3conf.gns3_local_server_conf_path().name == "gns3_server.conf"
+
+
+def test_wrapper_local_server_conf_backup_path_lives_in_wrapper_state_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
+    assert gns3conf.wrapper_local_server_conf_backup_path().parent == gns3conf.wrapper_state_dir()
+
+
+# ---------------------------------------------------------------------------
+# gui_is_running
+# ---------------------------------------------------------------------------
+
+
+class _FakeProcess:
+    def __init__(self, name):
+        self._name = name
+
+    def name(self):
+        return self._name
+
+
+def test_gui_is_running_no_pid_file(tmp_path):
+    assert gns3conf.gui_is_running(tmp_path / "gns3_gui.pid") is False
+
+
+def test_gui_is_running_pid_file_has_garbage(tmp_path):
+    pid_path = tmp_path / "gns3_gui.pid"
+    pid_path.write_text("not-a-pid")
+    assert gns3conf.gui_is_running(pid_path) is False
+
+
+def test_gui_is_running_pid_no_longer_exists(monkeypatch, tmp_path):
+    pid_path = tmp_path / "gns3_gui.pid"
+    pid_path.write_text("99999")
+
+    def raise_no_such_process(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(gns3conf.psutil, "Process", raise_no_such_process)
+    assert gns3conf.gui_is_running(pid_path) is False
+
+
+def test_gui_is_running_pid_reused_by_unrelated_process(monkeypatch, tmp_path):
+    # A dead GNS3 process's PID can, in principle, later be reused by the OS
+    # for something unrelated — name-checking guards against that.
+    pid_path = tmp_path / "gns3_gui.pid"
+    pid_path.write_text("4242")
+    monkeypatch.setattr(gns3conf.psutil, "Process", lambda pid: _FakeProcess("firefox"))
+    assert gns3conf.gui_is_running(pid_path) is False
+
+
+def test_gui_is_running_true_for_live_gns3_process(monkeypatch, tmp_path):
+    pid_path = tmp_path / "gns3_gui.pid"
+    pid_path.write_text("4242")
+    monkeypatch.setattr(gns3conf.psutil, "Process", lambda pid: _FakeProcess("gns3_gui"))
+    assert gns3conf.gui_is_running(pid_path) is True
+
+
+def test_gui_is_running_true_for_live_python_process(monkeypatch, tmp_path):
+    # GNS3 run from source (not a packaged build) shows up as a "python"
+    # process rather than "gns3" — isMainGui() in gns3-gui accepts both.
+    pid_path = tmp_path / "gns3_gui.pid"
+    pid_path.write_text("4242")
+    monkeypatch.setattr(gns3conf.psutil, "Process", lambda pid: _FakeProcess("python3.12"))
+    assert gns3conf.gui_is_running(pid_path) is True
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +278,65 @@ def test_patch_gui_conf_second_call_refreshes_ip_and_password(tmp_path):
     assert len(servers) == 1
     assert servers[0]["host"] == "35.9.9.9"
     assert servers[0]["password"] == "pw2"
+
+
+# ---------------------------------------------------------------------------
+# patch_local_server_conf
+# ---------------------------------------------------------------------------
+
+
+def _read_server_section(path):
+    config = configparser.RawConfigParser()
+    config.read(path, encoding="utf-8")
+    return dict(config["Server"])
+
+
+def test_patch_local_server_conf_writes_ini_with_server_section(tmp_path):
+    path = tmp_path / "gns3_server.conf"
+    gns3conf.patch_local_server_conf(
+        path, host="34.1.2.3", port=3080, protocol="http", user="admin", password="pw1"
+    )
+    section = _read_server_section(path)
+    assert section["host"] == "34.1.2.3"
+    assert section["port"] == "3080"
+    assert section["protocol"] == "http"
+    assert section["user"] == "admin"
+    assert section["password"] == "pw1"
+
+
+def test_patch_local_server_conf_auth_and_auto_start(tmp_path):
+    # auto_start=False is what makes GNS3 GUI treat this as its main server
+    # instead of trying to run/use a local one (gns3conf module docstring) —
+    # confirmed from gns3-gui's own source, not yet from a live re-test.
+    path = tmp_path / "gns3_server.conf"
+    gns3conf.patch_local_server_conf(
+        path, host="34.1.2.3", port=3080, protocol="http", user="admin", password="pw1"
+    )
+    section = _read_server_section(path)
+    assert section["auth"] == "True"
+    assert section["auto_start"] == "False"
+
+
+def test_patch_local_server_conf_preserves_unrelated_keys(tmp_path):
+    path = tmp_path / "gns3_server.conf"
+    path.write_text("[Server]\nimages_path = /home/user/GNS3/images\n\n[Other]\nfoo = bar\n")
+    gns3conf.patch_local_server_conf(
+        path, host="34.1.2.3", port=3080, protocol="http", user="admin", password="pw1"
+    )
+    config = configparser.RawConfigParser()
+    config.read(path, encoding="utf-8")
+    assert config["Server"]["images_path"] == "/home/user/GNS3/images"
+    assert config["Other"]["foo"] == "bar"
+
+
+def test_patch_local_server_conf_second_call_refreshes_ip_and_password(tmp_path):
+    path = tmp_path / "gns3_server.conf"
+    gns3conf.patch_local_server_conf(
+        path, host="34.1.2.3", port=3080, protocol="http", user="admin", password="pw1"
+    )
+    gns3conf.patch_local_server_conf(
+        path, host="35.9.9.9", port=3080, protocol="http", user="admin", password="pw2"
+    )
+    section = _read_server_section(path)
+    assert section["host"] == "35.9.9.9"
+    assert section["password"] == "pw2"
