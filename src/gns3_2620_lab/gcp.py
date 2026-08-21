@@ -1,15 +1,16 @@
 """gcloud subprocess wrappers.
 
 Every gcloud call goes through GcpContext.run so a config name (see
---gcloud-config) is applied consistently via CLOUDSDK_ACTIVE_CONFIG_NAME
-rather than mutating the caller's active gcloud configuration — see
-CLAUDE.md, "Account isolation" in the plan.
+--gcloud-config) is applied consistently via CLOUDSDK_ACTIVE_CONFIG_NAME,
+rather than mutating the caller's active gcloud configuration.
 
-Structured fields (status, IP, ...) are always read back with
---format=json and parsed, never scraped from human-readable text: gcloud's
-plain-text output isn't a stable contract, and "must verify afterwards
-rather than trusting the exit code" (CLAUDE.md, apt fails atomically) is
-the same principle applied to gcloud calls.
+Structured fields (status, IP, ...) are always read back with --format=json
+and parsed, never scraped from human-readable text: gcloud's plain-text
+output isn't a stable contract, so results are verified rather than trusted
+from the exit code alone.
+
+Author: Yves R. Shema <yshema@bcit.ca>
+Co-Authored-By: Claude <noreply@anthropic.com>
 """
 
 from __future__ import annotations
@@ -31,11 +32,16 @@ class GcpError(RuntimeError):
     """A gcloud call failed or returned something we didn't expect."""
 
 
+class GcloudNotFoundError(GcpError):
+    """gcloud isn't on PATH — distinct from GcpError so callers can show
+    full account/CLI setup instructions instead of a bare error line."""
+
+
 def find_gcloud() -> str:
     """Locate the gcloud executable. On Windows it's gcloud.cmd, not gcloud."""
     exe = shutil.which("gcloud") or shutil.which("gcloud.cmd")
     if not exe:
-        raise GcpError(
+        raise GcloudNotFoundError(
             "gcloud was not found on PATH. Install the Google Cloud SDK first."
         )
     return exe
@@ -48,25 +54,46 @@ def run(
     config: str | None = None,
     check: bool = True,
     timeout: float | None = None,
+    capture: bool = True,
 ) -> subprocess.CompletedProcess:
+    """capture=False lets gcloud's own stdout/stderr (including its native
+    progress spinner on slow calls like `instances create`) go straight to
+    the terminal instead of being buffered and replayed later. Only use it
+    for calls whose output nothing downstream needs to parse — on failure,
+    the user already saw gcloud's real error live, so the exception
+    message doesn't repeat it."""
     import os
 
     env = os.environ.copy()
     if config:
         env["CLOUDSDK_ACTIVE_CONFIG_NAME"] = config
 
-    result = subprocess.run(
-        [gcloud_exe, *args],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if check and result.returncode != 0:
-        raise GcpError(
-            f"gcloud {' '.join(args)} failed (exit {result.returncode}): "
-            f"{result.stderr.strip()}"
+    try:
+        result = subprocess.run(
+            [gcloud_exe, *args],
+            env=env,
+            capture_output=capture,
+            text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run raises instead of returning a CompletedProcess on a
+        # timeout — check=False callers (e.g. wait_for_ssh_ready's poll
+        # loop) expect a returncode to inspect on a failed attempt, not an
+        # exception, so a slow attempt (sshd not answering yet, as opposed
+        # to a fast "Connection refused") crashed the whole command instead
+        # of being retried like any other failed attempt. Confirmed live.
+        if check:
+            raise GcpError(f"gcloud {' '.join(args)} timed out after {timeout}s") from exc
+        return subprocess.CompletedProcess(
+            [gcloud_exe, *args],
+            returncode=124,
+            stdout="" if capture else None,
+            stderr=f"timed out after {timeout}s" if capture else None,
+        )
+    if check and result.returncode != 0:
+        detail = f": {result.stderr.strip()}" if capture else " (see gcloud output above)"
+        raise GcpError(f"gcloud {' '.join(args)} failed (exit {result.returncode}){detail}")
     return result
 
 
@@ -102,6 +129,17 @@ def get_active_project(gcloud_exe: str, config: str | None = None) -> str:
             "'gcloud config set project <PROJECT_ID>'."
         )
     return project
+
+
+def get_active_zone(gcloud_exe: str, config: str | None = None) -> str:
+    result = run(gcloud_exe, ["config", "get-value", "compute/zone"], config=config)
+    zone = result.stdout.strip()
+    if not zone or zone == "(unset)":
+        raise GcpError(
+            "No default zone configured. Pass --zone, or set one with "
+            "'gcloud config set compute/zone <ZONE>'."
+        )
+    return zone
 
 
 def instance_describe(ctx: GcpContext) -> dict | None:
@@ -151,6 +189,20 @@ def instance_external_ip(ctx: GcpContext) -> str | None:
     return None
 
 
+def list_instances(gcloud_exe: str, project: str, *, config: str | None = None) -> list:
+    """All compute instances in the project, across every zone — deliberately
+    unfiltered (not just ones tagged/created by this tool), since the point
+    is helping a user find a VM whose name they don't remember, including
+    one nobody created through this wrapper."""
+    return run_json(gcloud_exe, ["compute", "instances", "list", "--project", project], config=config)
+
+
+def instance_zone_name(info: dict) -> str:
+    """instances.list/describe report zone as a full resource URL
+    (".../zones/us-west1-b"); callers just want the bare name."""
+    return info["zone"].rsplit("/", 1)[-1]
+
+
 def create_firewall_rule(
     ctx: GcpContext,
     *,
@@ -177,8 +229,7 @@ def create_firewall_rule(
 
 
 def update_firewall_source_range(ctx: GcpContext, *, name: str, source_range: str) -> None:
-    # Partial update: gcloud leaves every flag not passed here untouched
-    # (CLAUDE.md, "gcloud firewall-rules update is partial").
+    # Partial update: gcloud leaves every flag not passed here untouched.
     ctx.run(
         [
             "compute",
@@ -217,7 +268,11 @@ def create_instance(
     disk_type: str = "pd-balanced",
     tags: list,
     startup_script_path: Path | None = None,
-) -> dict:
+) -> None:
+    # capture=False (no --format=json either, since nothing parses the
+    # result): this call alone can take 10-60s, and gcloud has its own
+    # native progress spinner for it — better to let that show live than
+    # buffer it silently the whole time.
     args = [
         "compute",
         "instances",
@@ -232,6 +287,8 @@ def create_instance(
         f"--image-project={image_project}",
         f"--boot-disk-size={disk_size_gb}GB",
         f"--boot-disk-type={disk_type}",
+        # Requires machine_type in N1/N2/C2 — nested virtualization needs a
+        # Haswell+ host CPU, unavailable on E2/N2D/AMD/Arm/memory-optimized.
         "--enable-nested-virtualization",
         f"--tags={','.join(tags)}",
     ]
@@ -240,18 +297,20 @@ def create_instance(
         if startup_script_path is None:
             startup_script_path = stack.enter_context(_bundled_provision_script_context())
         args.append(f"--metadata-from-file=startup-script={startup_script_path}")
-        return ctx.run_json(args)
+        ctx.run(args, capture=False)
 
 
 def start_instance(ctx: GcpContext) -> None:
     ctx.run(
-        ["compute", "instances", "start", ctx.instance, "--project", ctx.project, "--zone", ctx.zone]
+        ["compute", "instances", "start", ctx.instance, "--project", ctx.project, "--zone", ctx.zone],
+        capture=False,
     )
 
 
 def stop_instance(ctx: GcpContext) -> None:
     ctx.run(
-        ["compute", "instances", "stop", ctx.instance, "--project", ctx.project, "--zone", ctx.zone]
+        ["compute", "instances", "stop", ctx.instance, "--project", ctx.project, "--zone", ctx.zone],
+        capture=False,
     )
 
 
@@ -263,6 +322,7 @@ def wait_for_status(
     poll_interval: float = 3,
     sleep=time.sleep,
     now=time.monotonic,
+    on_tick=lambda: None,
 ) -> str:
     deadline = now() + timeout
     status = instance_status(ctx)
@@ -272,6 +332,7 @@ def wait_for_status(
                 f"timed out waiting for {ctx.instance} to reach {target_status} "
                 f"(last seen: {status})"
             )
+        on_tick()
         sleep(poll_interval)
         status = instance_status(ctx)
     return status
@@ -284,21 +345,25 @@ def wait_for_external_ip(
     poll_interval: float = 3,
     sleep=time.sleep,
     now=time.monotonic,
+    on_tick=lambda: None,
 ) -> str | None:
     deadline = now() + timeout
     ip = instance_external_ip(ctx)
     while ip is None:
         if now() >= deadline:
             return None
+        on_tick()
         sleep(poll_interval)
         ip = instance_external_ip(ctx)
     return ip
 
 
-def ssh_run(ctx: GcpContext, command: str, *, timeout: float | None = 60) -> subprocess.CompletedProcess:
-    # Each call is a fresh login shell (CLAUDE.md, §2.9) — callers that need
-    # a group membership change to take effect must issue it as a separate
-    # ssh_run call from the one that relies on it.
+def ssh_run(
+    ctx: GcpContext, command: str, *, check: bool = True, timeout: float | None = 60
+) -> subprocess.CompletedProcess:
+    # Each call is a fresh login shell — callers that need a group
+    # membership change to take effect must issue it as a separate ssh_run
+    # call from the one that relies on it.
     return ctx.run(
         [
             "compute",
@@ -311,8 +376,32 @@ def ssh_run(ctx: GcpContext, command: str, *, timeout: float | None = 60) -> sub
             "--command",
             command,
         ],
+        check=check,
         timeout=timeout,
     )
+
+
+def wait_for_ssh_ready(
+    ctx: GcpContext,
+    *,
+    timeout: float = 120,
+    poll_interval: float = 5,
+    sleep=time.sleep,
+    now=time.monotonic,
+    on_tick=lambda: None,
+) -> bool:
+    """GCE reporting an instance RUNNING only means it started booting, not
+    that sshd is accepting connections yet. Poll a trivial remote command
+    instead of assuming SSH is ready as soon as an IP is."""
+    deadline = now() + timeout
+    while True:
+        result = ssh_run(ctx, "true", check=False, timeout=15)
+        if result.returncode == 0:
+            return True
+        if now() >= deadline:
+            return False
+        on_tick()
+        sleep(poll_interval)
 
 
 class _IPv4HTTPSConnection(http.client.HTTPSConnection):
@@ -366,6 +455,7 @@ def wait_for_http_ready(
     sleep=time.sleep,
     now=time.monotonic,
     connection_cls=http.client.HTTPConnection,
+    on_tick=lambda: None,
 ) -> bool:
     deadline = now() + timeout
     while True:
@@ -382,4 +472,5 @@ def wait_for_http_ready(
             pass
         if now() >= deadline:
             return False
+        on_tick()
         sleep(poll_interval)

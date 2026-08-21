@@ -87,6 +87,52 @@ def test_run_check_false_does_not_raise(monkeypatch):
     assert result.returncode == 1
 
 
+def test_run_capture_false_passes_capture_output_false_through(monkeypatch):
+    captured = {}
+
+    def fake_run(argv, env, capture_output, text, timeout):
+        captured["capture_output"] = capture_output
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(gcp.subprocess, "run", fake_run)
+    gcp.run("gcloud", ["compute", "instances", "create", "x"], capture=False)
+    assert captured["capture_output"] is False
+
+
+def test_run_capture_false_error_message_does_not_claim_stderr_detail(monkeypatch):
+    # Nothing was captured, so the message must not imply it has the real
+    # stderr text — the user already saw gcloud's actual output live.
+    monkeypatch.setattr(
+        gcp.subprocess, "run", lambda *a, **k: FakeCompletedProcess(returncode=1, stderr="")
+    )
+    with pytest.raises(gcp.GcpError, match=r"see gcloud output above"):
+        gcp.run("gcloud", ["compute", "instances", "create", "x"], capture=False)
+
+
+def test_run_timeout_raises_gcperror_by_default(monkeypatch):
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="gcloud", timeout=15)
+
+    monkeypatch.setattr(gcp.subprocess, "run", fake_run)
+    with pytest.raises(gcp.GcpError, match="timed out"):
+        gcp.run("gcloud", ["compute", "ssh", "x", "--command", "true"], timeout=15)
+
+
+def test_run_timeout_check_false_returns_failed_result_instead_of_raising(monkeypatch):
+    # Regression test: subprocess.run raises on a timeout instead of
+    # returning a CompletedProcess. A check=False caller (e.g.
+    # wait_for_ssh_ready's poll loop) must get a result with a nonzero
+    # returncode back, like any other failed attempt, not an exception that
+    # crashes the whole command. Confirmed live: SSH to a freshly-started
+    # VM can go quiet instead of refusing fast.
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="gcloud", timeout=15)
+
+    monkeypatch.setattr(gcp.subprocess, "run", fake_run)
+    result = gcp.run("gcloud", ["compute", "ssh", "x", "--command", "true"], check=False, timeout=15)
+    assert result.returncode != 0
+
+
 def test_run_json_parses_stdout(monkeypatch):
     monkeypatch.setattr(
         gcp.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout='{"status": "RUNNING"}')
@@ -144,6 +190,30 @@ def test_get_active_project_unset_raises(monkeypatch, stdout):
     monkeypatch.setattr(gcp, "run", lambda *a, **k: FakeCompletedProcess(stdout=stdout))
     with pytest.raises(gcp.GcpError):
         gcp.get_active_project("gcloud")
+
+
+# ---------------------------------------------------------------------------
+# get_active_zone
+# ---------------------------------------------------------------------------
+
+
+def test_get_active_zone_returns_value(monkeypatch):
+    captured = {}
+
+    def fake_run(exe, args, **kw):
+        captured["args"] = args
+        return FakeCompletedProcess(stdout="us-west1-b\n")
+
+    monkeypatch.setattr(gcp, "run", fake_run)
+    assert gcp.get_active_zone("gcloud") == "us-west1-b"
+    assert captured["args"] == ["config", "get-value", "compute/zone"]
+
+
+@pytest.mark.parametrize("stdout", ["", "(unset)\n"])
+def test_get_active_zone_unset_raises(monkeypatch, stdout):
+    monkeypatch.setattr(gcp, "run", lambda *a, **k: FakeCompletedProcess(stdout=stdout))
+    with pytest.raises(gcp.GcpError):
+        gcp.get_active_zone("gcloud")
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +277,24 @@ def test_instance_external_ip_no_instance(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# list_instances / instance_zone_name
+# ---------------------------------------------------------------------------
+
+
+def test_list_instances_builds_expected_args(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(gcp, "run_json", lambda exe, args, **kw: captured.update(args=args, kw=kw) or [])
+    gcp.list_instances("gcloud", "proj", config="cfg")
+    assert captured["args"] == ["compute", "instances", "list", "--project", "proj"]
+    assert captured["kw"]["config"] == "cfg"
+
+
+def test_instance_zone_name_extracts_bare_name_from_url():
+    info = {"zone": "https://www.googleapis.com/compute/v1/projects/proj/zones/us-west1-b"}
+    assert gcp.instance_zone_name(info) == "us-west1-b"
+
+
+# ---------------------------------------------------------------------------
 # firewall rules
 # ---------------------------------------------------------------------------
 
@@ -254,11 +342,11 @@ def test_create_instance_builds_expected_args(monkeypatch, tmp_path):
     script.write_text("#!/usr/bin/env bash\n")
     captured = {}
 
-    def fake_run_json(args):
+    def fake_run(args, **kw):
         captured["args"] = args
-        return {"id": "1"}
+        captured["kwargs"] = kw
 
-    monkeypatch.setattr(ctx, "run_json", fake_run_json)
+    monkeypatch.setattr(ctx, "run", fake_run)
 
     result = gcp.create_instance(ctx, tags=["gns3"], startup_script_path=script)
 
@@ -270,18 +358,17 @@ def test_create_instance_builds_expected_args(monkeypatch, tmp_path):
     assert "--boot-disk-size=30GB" in args
     assert f"--metadata-from-file=startup-script={script}" in args
     assert "--tags=gns3" in args
-    assert result == {"id": "1"}
+    assert "--format=json" not in args  # nothing parses the result
+    # capture=False: this call is slow, and gcloud has its own progress
+    # spinner for it — let that show live instead of buffering silently.
+    assert captured["kwargs"]["capture"] is False
+    assert result is None
 
 
 def test_create_instance_uses_bundled_script_by_default(monkeypatch):
     ctx = make_ctx()
     captured = {}
-
-    def fake_run_json(args):
-        captured["args"] = args
-        return {}
-
-    monkeypatch.setattr(ctx, "run_json", fake_run_json)
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(args=args))
     gcp.create_instance(ctx, tags=["gns3"])
     startup_arg = next(a for a in captured["args"] if a.startswith("--metadata-from-file=startup-script="))
     bundled_path = startup_arg.split("=", 2)[2]
@@ -296,21 +383,23 @@ def test_create_instance_uses_bundled_script_by_default(monkeypatch):
 def test_start_instance_args(monkeypatch):
     ctx = make_ctx()
     captured = {}
-    monkeypatch.setattr(ctx, "run", lambda args, **k: captured.setdefault("args", args))
+    monkeypatch.setattr(ctx, "run", lambda args, **k: captured.update(args=args, kwargs=k))
     gcp.start_instance(ctx)
     assert captured["args"] == [
         "compute", "instances", "start", "gns3-lab", "--project", "proj", "--zone", "us-west1-b"
     ]
+    assert captured["kwargs"]["capture"] is False
 
 
 def test_stop_instance_args(monkeypatch):
     ctx = make_ctx()
     captured = {}
-    monkeypatch.setattr(ctx, "run", lambda args, **k: captured.setdefault("args", args))
+    monkeypatch.setattr(ctx, "run", lambda args, **k: captured.update(args=args, kwargs=k))
     gcp.stop_instance(ctx)
     assert captured["args"] == [
         "compute", "instances", "stop", "gns3-lab", "--project", "proj", "--zone", "us-west1-b"
     ]
+    assert captured["kwargs"]["capture"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +420,23 @@ def test_wait_for_status_returns_once_reached(monkeypatch):
         now=lambda: clock["t"],
     )
     assert result == "RUNNING"
+
+
+def test_wait_for_status_calls_on_tick_once_per_poll(monkeypatch):
+    statuses = iter(["PROVISIONING", "STAGING", "RUNNING"])
+    monkeypatch.setattr(gcp, "instance_status", lambda ctx: next(statuses))
+    clock = {"t": 0.0}
+    ticks = []
+    gcp.wait_for_status(
+        make_ctx(),
+        "RUNNING",
+        timeout=100,
+        poll_interval=1,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+        on_tick=lambda: ticks.append(True),
+    )
+    assert len(ticks) == 2  # two polls before the third call finds RUNNING
 
 
 def test_wait_for_status_times_out(monkeypatch):
@@ -360,14 +466,17 @@ def test_wait_for_external_ip_returns_once_available(monkeypatch):
     ips = iter([None, None, "34.1.2.3"])
     monkeypatch.setattr(gcp, "instance_external_ip", lambda ctx: next(ips))
     clock = {"t": 0.0}
+    ticks = []
     result = gcp.wait_for_external_ip(
         make_ctx(),
         timeout=60,
         poll_interval=1,
         sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
         now=lambda: clock["t"],
+        on_tick=lambda: ticks.append(True),
     )
     assert result == "34.1.2.3"
+    assert len(ticks) == 2
 
 
 def test_wait_for_external_ip_times_out_returns_none(monkeypatch):
@@ -404,6 +513,104 @@ def test_ssh_run_builds_expected_args(monkeypatch):
         "--command", "echo hi",
     ]
     assert captured["kwargs"]["timeout"] == 30
+
+
+def test_ssh_run_defaults_to_check_true(monkeypatch):
+    ctx = make_ctx()
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(kw))
+    gcp.ssh_run(ctx, "echo hi")
+    assert captured["check"] is True
+
+
+def test_ssh_run_check_false_is_passed_through(monkeypatch):
+    # Needed by cli._discover_or_generate_credentials, which probes for a
+    # config file that may not exist on the remote instance and must not
+    # raise just because the probe command itself fails.
+    ctx = make_ctx()
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(kw))
+    gcp.ssh_run(ctx, "cat maybe-missing", check=False)
+    assert captured["check"] is False
+
+
+# ---------------------------------------------------------------------------
+# wait_for_ssh_ready
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_ssh_ready_succeeds_once_sshd_accepts_connections(monkeypatch):
+    # Regression test: GCE reporting RUNNING doesn't mean sshd is up yet —
+    # confirmed on a real VM where a "Connection refused" was immediately
+    # followed by success on a bare retry.
+    results = iter([FakeCompletedProcess(returncode=255), FakeCompletedProcess(returncode=0)])
+    monkeypatch.setattr(gcp, "ssh_run", lambda ctx, cmd, **k: next(results))
+    clock = {"t": 0.0}
+    ticks = []
+    assert gcp.wait_for_ssh_ready(
+        make_ctx(),
+        timeout=60,
+        poll_interval=1,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+        on_tick=lambda: ticks.append(True),
+    ) is True
+    assert len(ticks) == 1
+
+
+def test_wait_for_ssh_ready_never_calls_ssh_run_with_check_true(monkeypatch):
+    # A "Connection refused" must not raise (GcpError, via check=True) —
+    # it's an expected, retryable state while sshd is still starting.
+    captured = {}
+    monkeypatch.setattr(
+        gcp, "ssh_run", lambda ctx, cmd, **k: captured.update(k) or FakeCompletedProcess(returncode=0)
+    )
+    gcp.wait_for_ssh_ready(make_ctx())
+    assert captured["check"] is False
+
+
+def test_wait_for_ssh_ready_survives_a_slow_attempt_that_times_out(monkeypatch):
+    # Regression test, confirmed live: a freshly-started VM's sshd can go
+    # quiet for longer than one attempt's timeout instead of refusing fast
+    # — subprocess.run raises subprocess.TimeoutExpired for that, which
+    # used to propagate all the way out of wait_for_ssh_ready and crash the
+    # whole command instead of being retried like any other failed attempt.
+    # Exercises the real ssh_run -> GcpContext.run -> run() path, not a
+    # mocked ssh_run, since the bug was in that chain's exception handling.
+    attempts = iter(
+        [
+            subprocess.TimeoutExpired(cmd="gcloud", timeout=15),
+            FakeCompletedProcess(returncode=0),
+        ]
+    )
+
+    def fake_run(*a, **k):
+        outcome = next(attempts)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(gcp.subprocess, "run", fake_run)
+    clock = {"t": 0.0}
+    assert gcp.wait_for_ssh_ready(
+        make_ctx(),
+        timeout=60,
+        poll_interval=1,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+    ) is True
+
+
+def test_wait_for_ssh_ready_times_out_returns_false(monkeypatch):
+    monkeypatch.setattr(gcp, "ssh_run", lambda ctx, cmd, **k: FakeCompletedProcess(returncode=255))
+    clock = {"t": 0.0}
+    assert gcp.wait_for_ssh_ready(
+        make_ctx(),
+        timeout=5,
+        poll_interval=2,
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        now=lambda: clock["t"],
+    ) is False
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +721,7 @@ def test_wait_for_http_ready_success_first_try():
 def test_wait_for_http_ready_retries_then_succeeds():
     FlakyThenOkConnection.calls = 0
     clock = {"t": 0.0}
+    ticks = []
     result = gcp.wait_for_http_ready(
         "1.2.3.4",
         3080,
@@ -522,8 +730,10 @@ def test_wait_for_http_ready_retries_then_succeeds():
         sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
         now=lambda: clock["t"],
         connection_cls=FlakyThenOkConnection,
+        on_tick=lambda: ticks.append(True),
     )
     assert result is True
+    assert len(ticks) >= 1
 
 
 def test_wait_for_http_ready_times_out_returns_false():
