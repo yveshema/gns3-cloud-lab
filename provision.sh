@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# provision.sh — GCE startup-script for the gns3-2620-lab VM.
+# provision.sh — GCE startup-script for the gns3-cloud-lab VM.
 #
 # Author: Yves R. Shema <yshema@bcit.ca>
 # Co-Authored-By: Claude <noreply@anthropic.com>
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-SENTINEL_DIR=/var/lib/gns3-2620-lab
+SENTINEL_DIR=/var/lib/gns3-cloud-lab
 SENTINEL="$SENTINEL_DIR/provisioned"
 VPCS_TAG=v0.6.2
 VPCS_VERSION=0.6.2

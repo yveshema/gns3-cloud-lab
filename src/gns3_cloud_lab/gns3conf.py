@@ -88,7 +88,7 @@ def gns3_local_server_conf_path() -> Path:
 
 
 def wrapper_state_dir() -> Path:
-    return app_config_dir("gns3-2620-lab")
+    return app_config_dir("gns3-cloud-lab")
 
 
 def wrapper_state_path() -> Path:
@@ -150,7 +150,7 @@ def upsert_remote_server(
     user: str,
     password: str,
 ) -> dict:
-    """Return a copy of conf with the gns3-2620-lab remote server entry
+    """Return a copy of conf with the gns3-cloud-lab remote server entry
     added or updated in place, leaving every other key untouched.
 
     Entries are matched by "user" — good enough as long as the wrapper only

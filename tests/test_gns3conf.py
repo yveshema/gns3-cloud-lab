@@ -4,7 +4,7 @@ import json
 import psutil
 import pytest
 
-from gns3_2620_lab import gns3conf
+from gns3_cloud_lab import gns3conf
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +69,7 @@ def test_gns3_gui_config_path_is_versioned(monkeypatch, tmp_path):
 def test_wrapper_state_path_is_separate_from_gns3(monkeypatch, tmp_path):
     monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
     monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
-    assert gns3conf.wrapper_state_path() == tmp_path / ".config" / "gns3-2620-lab" / "state.json"
+    assert gns3conf.wrapper_state_path() == tmp_path / ".config" / "gns3-cloud-lab" / "state.json"
 
 
 def test_gns3_gui_pid_path_sits_next_to_gui_config(monkeypatch, tmp_path):

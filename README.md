@@ -38,7 +38,7 @@ on Windows 11. Use this only if that's not an option for you.
 
 ```
 git clone <REPO_URL>
-cd gns3-2620-lab
+cd gns3-cloud-lab
 python install.py
 ```
 
@@ -46,7 +46,7 @@ python install.py
 repo hasn't been published anywhere yet.)*
 
 `install.py` bootstraps [uv](https://docs.astral.sh/uv/) automatically if
-it isn't already on your machine, then installs the `gns3-2620-lab`
+it isn't already on your machine, then installs the `gns3-cloud-lab`
 command with five subcommands: `scan`, `create`, `enroll`,
 `start`/`refresh`, `stop`, `status`. To uninstall later, run
 `python uninstall.py` from the same checkout.
@@ -54,13 +54,13 @@ command with five subcommands: `scan`, `create`, `enroll`,
 ## 3. Create your lab VM
 
 ```
-gns3-2620-lab create
+gns3-cloud-lab create
 ```
 
 This creates a firewall rule scoped to your current public IP address and a
 `n2-standard-4` VM (4 vCPU, 16 GB RAM) that installs and configures GNS3 on
 first boot. It takes a few minutes to finish booting and provisioning —
-`gns3-2620-lab status` will show you where it's at. You only do this once
+`gns3-cloud-lab status` will show you where it's at. You only do this once
 for the term; re-running it later is safe and just confirms the VM is
 already there.
 
@@ -77,7 +77,7 @@ already there.
 ## 5. Start your lab, each session
 
 ```
-gns3-2620-lab start
+gns3-cloud-lab start
 ```
 
 Every time you start, both your VM's address and your own public IP may
@@ -100,7 +100,7 @@ project file if you need to submit your work — download it from there.
 ## 7. Stop when you're done
 
 ```
-gns3-2620-lab stop
+gns3-cloud-lab stop
 ```
 
 **Always stop the VM when you're finished for the session.** You're only
@@ -111,7 +111,7 @@ single biggest way to burn through your trial credit early.
 ## Checking on things
 
 ```
-gns3-2620-lab status
+gns3-cloud-lab status
 ```
 
 Prints whether the VM exists, whether it's running, its current IP, and

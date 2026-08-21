@@ -255,7 +255,7 @@ def _bundled_provision_script_context():
     """Context manager yielding a real filesystem path to the bundled
     provision.sh, whether running from an installed wheel or an editable
     checkout."""
-    return resources.as_file(resources.files("gns3_2620_lab") / "provision.sh")
+    return resources.as_file(resources.files("gns3_cloud_lab") / "provision.sh")
 
 
 def create_instance(

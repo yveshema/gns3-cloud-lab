@@ -1,22 +1,22 @@
 [project]
-name = "gns3-2620-lab"
+name = "gns3-cloud-lab"
 version = "0.1.0"
 description = "Per-user GCP fallback for BCIT networking-2620 GNS3 labs"
 requires-python = ">=3.9"
 dependencies = ["psutil>=5"]
 
 [project.scripts]
-gns3-2620-lab = "gns3_2620_lab.cli:main"
+gns3-cloud-lab = "gns3_cloud_lab.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gns3_2620_lab"]
+packages = ["src/gns3_cloud_lab"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"provision.sh" = "gns3_2620_lab/provision.sh"
+"provision.sh" = "gns3_cloud_lab/provision.sh"
 
 [dependency-groups]
 dev = ["pytest>=8"]

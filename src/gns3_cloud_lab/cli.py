@@ -38,7 +38,7 @@ FIREWALL_PORTS = [f"tcp:{SERVER_PORT}", f"tcp:{CONSOLE_PORT_START}-{CONSOLE_PORT
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="gns3-2620-lab",
+        prog="gns3-cloud-lab",
         description="Per-user GCP fallback for BCIT networking-2620 GNS3 labs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(

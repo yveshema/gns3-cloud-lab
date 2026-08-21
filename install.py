@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install (or reinstall) the gns3-2620-lab CLI.
+"""Install (or reinstall) the gns3-cloud-lab CLI.
 
 The only prerequisite is Python 3. If `uv` isn't already on PATH, this
 bootstraps a private copy via the official installer (curl on Mac/Linux,
@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BOOTSTRAP_DIR = Path.home() / ".gns3-2620-lab" / "uv-bootstrap"
+BOOTSTRAP_DIR = Path.home() / ".gns3-cloud-lab" / "uv-bootstrap"
 
 
 def _bootstrapped_uv_path() -> Path:
@@ -83,11 +83,11 @@ def main() -> int:
     # stale cached build with no "Building..." line in the output.
     result = subprocess.run([uv, "tool", "install", "--force", "--no-cache", "."], cwd=project_dir)
     if result.returncode == 0:
-        print("\nInstalled. Run 'gns3-2620-lab -h' to get started.\n")
+        print("\nInstalled. Run 'gns3-cloud-lab -h' to get started.\n")
         # Imported from source directly rather than assuming the just-installed
         # console script is already on this process's PATH.
         sys.path.insert(0, str(project_dir / "src"))
-        from gns3_2620_lab import setup_help
+        from gns3_cloud_lab import setup_help
 
         setup_help.print_disclaimer()
         print()

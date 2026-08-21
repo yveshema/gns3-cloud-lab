@@ -1,4 +1,4 @@
-# gns3-2620-lab
+# gns3-cloud-lab
 
 Per-user, user-owned GCP fallback for BCIT networking-2620's GNS3 labs.
 Primary delivery is local GNS3 on Windows 11; this exists for laptops that
@@ -14,13 +14,13 @@ CHANGELOG.md rather than assuming it works.
 ## Deliverables (target layout)
 
 ```
-gns3-2620-lab/
+gns3-cloud-lab/
 ├── README.md              user guide, written last, from what actually happened
 ├── install.py             user-facing: bootstrap uv if needed, install the CLI
 ├── uninstall.py           user-facing: uv tool uninstall
 ├── provision.sh           GCE startup script
 ├── pyproject.toml
-└── src/gns3_2620_lab/
+└── src/gns3_cloud_lab/
     ├── cli.py             scan (default) / create / enroll / start (alias: refresh) / stop / status
     ├── gcp.py             gcloud subprocess wrappers
     └── gns3conf.py        locate and patch gns3_gui.conf per platform; GUI-running check

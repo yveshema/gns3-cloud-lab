@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from gns3_2620_lab import cli, gcp, gns3conf
+from gns3_cloud_lab import cli, gcp, gns3conf
 
 
 def make_ctx(**overrides):
