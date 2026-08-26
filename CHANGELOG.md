@@ -2,6 +2,29 @@
 
 ## 2026-08-26
 
+### Added
+- `enroll --ssh-user USER` pins the Linux account to SSH as on that specific
+  VM, and `start` reuses it from then on. Root cause this addresses:
+  `gcloud compute ssh` with no explicit user always resolves its own
+  default (local OS account, or the OS Login identity) — confirmed against
+  Google's own docs that this is recomputed fresh on every call and never
+  persisted anywhere gcloud controls, and that `ssh-keys` metadata governs
+  who's *allowed* to connect, not who gets picked when no user is given. On
+  a VM set up by hand (not by `provision.sh`), that default account can
+  land somewhere other than wherever gns3-server was actually installed —
+  auth succeeds, but `~/.config/GNS3/2.2/...` and `gns3server`'s own
+  location are read from the wrong home directory. Confirmed live: SSH as
+  the default account succeeded and found nothing; SSH as a different,
+  explicit account on the same VM found gns3-server already set up.
+  `GcpContext.ssh_user`, once set, is applied to *every* `ssh_run` call —
+  including both argv-building branches (the plain `--command` path and
+  the Windows/multi-line upload path's `scp` + `ssh`) — and `enroll` applies
+  it to its own SSH calls (boot-and-wait, credential discovery) immediately
+  rather than only saving it for `start` to pick up later, so credential
+  discovery doesn't run against the wrong account in the same enroll that
+  set it. `start` reads it back from local state (`entry.get("ssh_user")`,
+  so a VM enrolled before this change behaves exactly as it did before).
+
 ### Fixed
 - `start` failed on Windows with `bash: line 1: C:WINDOWSsystem32cmd.exe:
   command not found` the moment it reached `_remote_setup_command`'s
@@ -131,6 +154,11 @@
   files, so no manual recovery is needed.
 
 ### Needs live-VM validation
+- `enroll --ssh-user`/`start`'s reuse of it (2026-08-26 entry above): the
+  `USER@INSTANCE` argv form itself against a real `gcloud compute ssh` and
+  `gcloud compute scp`, and that it actually lands `start`'s SSH calls on
+  the account with gns3-server installed on the reporter's real
+  manually-provisioned VM.
 - `status`; `create`'s idempotent already-exists branch and `--dry-run`;
   `scan`; the GUI-must-be-closed gate and config backup/restore around
   `start`/`stop`; `install.py`/`uninstall.py`.

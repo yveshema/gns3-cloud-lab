@@ -516,6 +516,26 @@ def test_ssh_run_builds_expected_args(monkeypatch):
     assert captured["kwargs"]["timeout"] == 30
 
 
+def test_ssh_run_targets_pinned_user_when_set(monkeypatch):
+    # gcloud never remembers a username across calls on its own (no config
+    # property for it, and ssh-keys metadata only controls who's allowed in,
+    # not who gets picked) — a VM enrolled with an explicit ssh_user has to
+    # get USER@INSTANCE on every single call, forever.
+    ctx = make_ctx(ssh_user="rys")
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(args=args))
+    gcp.ssh_run(ctx, "echo hi")
+    assert captured["args"][2] == "rys@gns3-lab"
+
+
+def test_ssh_run_without_pinned_user_is_unchanged(monkeypatch):
+    ctx = make_ctx(ssh_user=None)
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(args=args))
+    gcp.ssh_run(ctx, "echo hi")
+    assert captured["args"][2] == "gns3-lab"
+
+
 def test_ssh_run_defaults_to_check_true(monkeypatch):
     ctx = make_ctx()
     captured = {}
@@ -609,6 +629,21 @@ def test_ssh_run_multiline_on_cmd_shim_uploads_and_runs_by_name(monkeypatch):
     # left behind regardless of check.
     assert not Path(uploaded_content["local_path"]).exists()
     assert isinstance(result, FakeCompletedProcess)
+
+
+def test_ssh_run_multiline_on_cmd_shim_targets_pinned_user_in_both_scp_and_ssh(monkeypatch):
+    # Easy to fix only one of the two calls this path makes (upload, then
+    # run-by-name) and leave the other targeting the wrong account — the
+    # upload has to land in the same home directory the script then runs
+    # from.
+    ctx = make_ctx(gcloud_exe="gcloud.CMD", ssh_user="rys")
+    calls = []
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: calls.append(args) or FakeCompletedProcess())
+    gcp.ssh_run(ctx, "line one\nline two")
+
+    scp_args, ssh_args = calls
+    assert scp_args[3] == "rys@gns3-lab:.gclab_cmd.sh"
+    assert ssh_args[2] == "rys@gns3-lab"
 
 
 def test_ssh_run_multiline_on_cmd_shim_passes_check_and_timeout_to_final_ssh(monkeypatch):

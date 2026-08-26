@@ -77,9 +77,20 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be created without creating it"
     )
-    sub.add_parser(
+    enroll_parser = sub.add_parser(
         "enroll",
         help="Adopt a VM that already exists in GCP but wasn't created by this tool",
+    )
+    enroll_parser.add_argument(
+        "--ssh-user",
+        default=None,
+        help=(
+            "Linux username to SSH as on this VM. Only needed if the VM was set up "
+            "by hand under a specific account and gcloud's own default username "
+            "(normally your local OS account) wouldn't land there — gcloud has no "
+            "way to remember this itself, so it's saved here and reused on every "
+            "later start."
+        ),
     )
     sub.add_parser(
         "start",
@@ -97,6 +108,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _firewall_name(instance: str) -> str:
     return f"{instance}-gns3"
+
+
+# Not full POSIX username validation — just enough to catch the mistakes an
+# --ssh-user typo is actually likely to be (an email address, a domain\name,
+# a pasted USER@INSTANCE): any of these would either break the USER@INSTANCE
+# argv gcloud expects or silently provision the wrong account.
+_INVALID_SSH_USER_CHARS = set(" \t@:/\\")
+
+
+def _validate_ssh_user(ssh_user: str) -> str | None:
+    """Returns an error message if ssh_user isn't safe to use as USER in
+    gcloud's USER@INSTANCE syntax, else None."""
+    if not ssh_user or any(c in _INVALID_SSH_USER_CHARS for c in ssh_user):
+        return (
+            f"{ssh_user!r} doesn't look like a Linux username "
+            "(no spaces, @, :, /, or \\)."
+        )
+    return None
 
 
 def _build_context(args, gcloud_exe: str, *, resolve_zone: bool = True) -> gcp.GcpContext:
@@ -432,12 +461,23 @@ def cmd_create(ctx: gcp.GcpContext, out=sys.stdout, dry_run: bool = False) -> in
     return 0
 
 
-def cmd_enroll(ctx: gcp.GcpContext, out=sys.stdout) -> int:
+def cmd_enroll(ctx: gcp.GcpContext, out=sys.stdout, ssh_user: str | None = None) -> int:
     state = _load_state()
     key = _state_key(ctx)
     if key in state:
         print(f"{ctx.instance} is already enrolled ({ctx.project}/{ctx.zone}). Nothing to do.", file=out)
         return 0
+
+    if ssh_user is not None:
+        err = _validate_ssh_user(ssh_user)
+        if err:
+            print(f"error: {err}", file=out)
+            return 1
+        # Set before any SSH below (including credential discovery further
+        # down) — not just saved for a later start to pick up. gcloud has no
+        # memory of its own for this (see GcpContext.ssh_user), so every SSH
+        # call this command makes, including its own, needs it applied now.
+        ctx.ssh_user = ssh_user
 
     info = gcp.instance_describe(ctx)
     if info is None:
@@ -479,6 +519,7 @@ def cmd_enroll(ctx: gcp.GcpContext, out=sys.stdout) -> int:
         "user": user,
         "password": password,
         "firewall_rule": fw_name,
+        "ssh_user": ssh_user,
     }
     _save_state(state)
 
@@ -510,6 +551,11 @@ def cmd_start(ctx: gcp.GcpContext, out=sys.stdout) -> int:
             file=out,
         )
         return 1
+
+    # Same pinned username enroll saved, if any — gcloud itself never
+    # remembers it (see GcpContext.ssh_user), so it has to come from our own
+    # state on every start, applied before the first SSH call below.
+    ctx.ssh_user = entry.get("ssh_user")
 
     external_ip, ssh_ready = _boot_and_wait_for_ssh(ctx, status, out)
     if external_ip is None:
@@ -640,7 +686,12 @@ def main(argv=None) -> int:
     try:
         gcloud_exe = gcp.find_gcloud()
         ctx = _build_context(args, gcloud_exe, resolve_zone=command != "scan")
-        kwargs = {"dry_run": args.dry_run} if command == "create" else {}
+        if command == "create":
+            kwargs = {"dry_run": args.dry_run}
+        elif command == "enroll":
+            kwargs = {"ssh_user": args.ssh_user}
+        else:
+            kwargs = {}
         return _COMMANDS[command](ctx, **kwargs)
     except gcp.GcloudNotFoundError as exc:
         print(f"error: {exc}\n", file=sys.stderr)

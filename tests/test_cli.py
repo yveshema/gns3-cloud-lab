@@ -68,6 +68,16 @@ def test_parser_defaults():
     assert args.command == "status"
 
 
+def test_parser_enroll_ssh_user_defaults_to_none():
+    args = cli.build_parser().parse_args(["enroll"])
+    assert args.ssh_user is None
+
+
+def test_parser_enroll_accepts_ssh_user():
+    args = cli.build_parser().parse_args(["enroll", "--ssh-user", "rys"])
+    assert args.ssh_user == "rys"
+
+
 def test_parser_overrides():
     args = cli.build_parser().parse_args(
         ["--project", "p1", "--instance", "scratch", "--zone", "us-east1-b", "--gcloud-config", "cfg", "create"]
@@ -232,8 +242,99 @@ def test_create_reuses_existing_firewall_rule(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _validate_ssh_user
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["", "rys@gns3-lab", "CORP\\rys", "yves rene", "a:b", "a/b"])
+def test_validate_ssh_user_rejects_unsafe_values(bad):
+    assert cli._validate_ssh_user(bad) is not None
+
+
+@pytest.mark.parametrize("good", ["rys", "yvess", "instructor-01"])
+def test_validate_ssh_user_accepts_plain_names(good):
+    assert cli._validate_ssh_user(good) is None
+
+
+# ---------------------------------------------------------------------------
 # cmd_enroll
 # ---------------------------------------------------------------------------
+
+
+def test_enroll_rejects_invalid_ssh_user_without_touching_gcp(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    called = []
+    monkeypatch.setattr(gcp, "instance_describe", lambda c: called.append(True))
+    out = io.StringIO()
+    assert cli.cmd_enroll(ctx, out=out, ssh_user="rys@gns3-lab") == 1
+    assert "doesn't look like a Linux username" in out.getvalue()
+    assert called == []
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_enroll_applies_ssh_user_to_its_own_ssh_calls(monkeypatch, tmp_path):
+    # Regression guard: an ssh_user only saved for a later start to pick up
+    # (instead of applied to ctx immediately) would leave enroll's own
+    # credential discovery running against gcloud's default account.
+    ctx = make_ctx()
+    monkeypatch.setattr(gcp, "instance_describe", lambda c: {"status": "RUNNING"})
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: "34.1.2.3")
+    seen_ssh_user_at_ready_check = []
+    monkeypatch.setattr(
+        gcp,
+        "wait_for_ssh_ready",
+        lambda c, **k: seen_ssh_user_at_ready_check.append(c.ssh_user) or True,
+    )
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: False)
+    monkeypatch.setattr(gcp, "create_firewall_rule", lambda c, **kw: None)
+    seen_ssh_user_at_discovery = []
+    monkeypatch.setattr(
+        gcp,
+        "ssh_run",
+        lambda c, command, **k: seen_ssh_user_at_discovery.append(c.ssh_user)
+        or _fake_completed(returncode=1, stdout=""),
+    )
+
+    out = io.StringIO()
+    assert cli.cmd_enroll(ctx, out=out, ssh_user="rys") == 0
+    assert seen_ssh_user_at_ready_check == ["rys"]
+    assert seen_ssh_user_at_discovery == ["rys"]
+
+
+def test_enroll_saves_ssh_user_in_state(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    monkeypatch.setattr(gcp, "instance_describe", lambda c: {"status": "RUNNING"})
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: "34.1.2.3")
+    monkeypatch.setattr(gcp, "wait_for_ssh_ready", lambda c, **k: True)
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: False)
+    monkeypatch.setattr(gcp, "create_firewall_rule", lambda c, **kw: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=1, stdout=""))
+
+    cli.cmd_enroll(ctx, out=io.StringIO(), ssh_user="rys")
+
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state[cli._state_key(ctx)]["ssh_user"] == "rys"
+
+
+def test_enroll_without_ssh_user_saves_none(monkeypatch, tmp_path):
+    # start reads this back with entry.get("ssh_user") — must be present (as
+    # None) so an already-enrolled VM predating this feature and a freshly
+    # enrolled one without --ssh-user behave identically.
+    ctx = make_ctx()
+    monkeypatch.setattr(gcp, "instance_describe", lambda c: {"status": "RUNNING"})
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: "34.1.2.3")
+    monkeypatch.setattr(gcp, "wait_for_ssh_ready", lambda c, **k: True)
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: False)
+    monkeypatch.setattr(gcp, "create_firewall_rule", lambda c, **kw: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=1, stdout=""))
+
+    cli.cmd_enroll(ctx, out=io.StringIO())
+
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state[cli._state_key(ctx)]["ssh_user"] is None
 
 
 def test_enroll_already_enrolled_is_a_noop(monkeypatch, tmp_path):
@@ -507,6 +608,40 @@ def test_start_happy_path_starts_refreshes_firewall_and_patches_gui(monkeypatch,
     output = out.getvalue()
     assert "34.1.2.3" in output
     assert "ready" in output
+
+
+def test_start_applies_ssh_user_saved_by_enroll(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx, ssh_user="rys")
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    seen = []
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: seen.append(c.ssh_user) or "34.1.2.3")
+    monkeypatch.setattr(gcp, "wait_for_ssh_ready", lambda c, **k: True)
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
+    monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: seen.append(c.ssh_user))
+    monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
+
+    assert cli.cmd_start(ctx, out=io.StringIO()) == 0
+    assert seen == ["rys", "rys", "rys"]
+
+
+def test_start_without_ssh_user_in_state_leaves_default_behavior(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)  # no ssh_user key at all — predates this feature
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    seen = []
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: seen.append(c.ssh_user) or "34.1.2.3")
+    monkeypatch.setattr(gcp, "wait_for_ssh_ready", lambda c, **k: True)
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
+    monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
+
+    assert cli.cmd_start(ctx, out=io.StringIO()) == 0
+    assert seen == [None]
 
 
 def test_start_already_running_does_not_call_start_instance(monkeypatch, tmp_path):
@@ -817,6 +952,21 @@ def test_main_dispatches_to_status(monkeypatch):
     assert cli.main(["status"]) == 0
     assert called["ctx"].project == "active-proj"
     assert called["ctx"].zone == "active-zone"
+
+
+def test_main_enroll_passes_ssh_user_through(monkeypatch):
+    monkeypatch.setattr(gcp, "find_gcloud", lambda: "gcloud")
+    monkeypatch.setattr(gcp, "get_active_project", lambda exe, cfg: "active-proj")
+    monkeypatch.setattr(gcp, "get_active_zone", lambda exe, cfg: "active-zone")
+    called = {}
+
+    def fake_enroll(ctx, **kw):
+        called.update(kw)
+        return 0
+
+    monkeypatch.setitem(cli._COMMANDS, "enroll", fake_enroll)
+    assert cli.main(["enroll", "--ssh-user", "rys"]) == 0
+    assert called["ssh_user"] == "rys"
 
 
 def test_main_scan_does_not_require_an_active_zone(monkeypatch):

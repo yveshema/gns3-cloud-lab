@@ -112,6 +112,11 @@ class GcpContext:
     zone: str
     instance: str
     config_name: str | None = None
+    # Set only for a VM enrolled with an explicit --ssh-user (cli.cmd_enroll):
+    # gcloud never remembers a username across calls (confirmed — there's no
+    # config property for it and metadata only controls who's *allowed* in,
+    # not who gets picked), so every ssh_run call has to keep supplying it.
+    ssh_user: str | None = None
 
     def run(self, args: list, **kwargs) -> subprocess.CompletedProcess:
         return run(self.gcloud_exe, args, config=self.config_name, **kwargs)
@@ -358,6 +363,13 @@ def wait_for_external_ip(
     return ip
 
 
+def _ssh_target(ctx: GcpContext) -> str:
+    """USER@INSTANCE if a pinned ssh_user is set, else the bare instance name
+    gcloud has always used (which resolves to whatever username gcloud's own
+    default-username logic picks — see the comment on GcpContext.ssh_user)."""
+    return f"{ctx.ssh_user}@{ctx.instance}" if ctx.ssh_user else ctx.instance
+
+
 def ssh_run(
     ctx: GcpContext, command: str, *, check: bool = True, timeout: float | None = 60
 ) -> subprocess.CompletedProcess:
@@ -384,7 +396,7 @@ def ssh_run(
         [
             "compute",
             "ssh",
-            ctx.instance,
+            _ssh_target(ctx),
             "--project",
             ctx.project,
             "--zone",
@@ -419,16 +431,21 @@ def _ssh_run_via_upload(
     import os
     import tempfile
 
+    target = _ssh_target(ctx)
     fd, local_path = tempfile.mkstemp(suffix=".sh")
     try:
         with os.fdopen(fd, "w", newline="\n") as f:
             f.write(command)
+        # gcloud compute scp accepts the same [USER@]INSTANCE: prefix as
+        # compute ssh (confirmed against gcloud's own reference docs) — the
+        # upload has to land in the pinned user's home too, or the script
+        # gets written to one account and run as another.
         ctx.run(
             [
                 "compute",
                 "scp",
                 local_path,
-                f"{ctx.instance}:{_REMOTE_UPLOAD_NAME}",
+                f"{target}:{_REMOTE_UPLOAD_NAME}",
                 "--project",
                 ctx.project,
                 "--zone",
@@ -449,7 +466,7 @@ def _ssh_run_via_upload(
         [
             "compute",
             "ssh",
-            ctx.instance,
+            target,
             "--project",
             ctx.project,
             "--zone",
