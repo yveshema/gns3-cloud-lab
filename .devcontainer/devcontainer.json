@@ -12,7 +12,6 @@
     "remoteUser": "vscode",
 
     "mounts": [
-      "source=/gns3-cloud-plan.md,target=/workspaces/gns3-cloud-plan.md,type=bind,readonly",
       "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly",
       "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/vscode/.claude/CLAUDE.md,type=bind,readonly",
       "source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind",
