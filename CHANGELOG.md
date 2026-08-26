@@ -57,6 +57,22 @@
   `gns3_local_server_conf_path()` in `gns3conf.py` now branch on
   `platform.system()` for the filename, same pattern already used by
   `app_config_dir()`. Not live-tested on Windows (see below).
+- `create` printed nothing at all while running — reported from a real run,
+  and the one command with no feedback of any kind. Every other command
+  either announces what it's doing (`start`/`stop`) or ticks a `_progress`
+  dot per poll. `create` has no poll loop to tick against: it's four
+  one-shot calls in a row (`instances describe`, the public-IP lookup, the
+  firewall rule, `instances create`), each a network round-trip, and each
+  gcloud invocation additionally costs a couple of seconds of its own
+  startup before reaching the API. New `_step()` helper — the non-looping
+  companion to `_progress` — announces each one *before* it runs, and
+  `start`/`stop`'s existing pre-gcloud lines now route through it too. It
+  always flushes: those two, and `create`'s last step, hand the terminal
+  straight to a `capture=False` subprocess writing to the same fd, so an
+  unflushed announcement can surface *after* the output of the step it was
+  announcing whenever stdout isn't a terminal (block-buffered). Regression
+  test asserts call order interleaved with output, not just that the text
+  appears somewhere — confirmed to fail without the fix.
 
 ## 2026-08-21
 
@@ -181,7 +197,13 @@
   cause.
 - Progress feedback during `start`/`stop` wait loops, and gcloud's own
   progress output on `create`/`start`/`stop` — unit-tested only, not yet
-  seen in a real terminal.
+  seen in a real terminal. Partly answered on 2026-08-26: a real `create`
+  run showed no output whatsoever, which is what the `_step()` change above
+  addresses. Still unconfirmed live: whether gcloud's *own* progress output
+  reaches the terminal through `capture=False` on each platform — if it
+  does, `create`'s last step is now announced and then followed by gcloud's
+  spinner; if it doesn't, that step is announced and then silent for up to
+  a minute, and needs a `_progress`-style ticker on a thread instead.
 - `gns3conf.gns3_gui_config_path()` on Windows/macOS — GNS3's documented
   layout, unverified; only Linux has a real client connection behind it.
 - `gcp.instance_describe`'s not-found detection (`"not found"`/

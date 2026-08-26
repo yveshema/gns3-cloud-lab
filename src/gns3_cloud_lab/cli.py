@@ -160,6 +160,15 @@ def _progress(out, label: str):
         print(file=out)
 
 
+def _step(out, label: str) -> None:
+    """Announce a single blocking call that's about to run. The companion to
+    _progress for work that isn't a poll loop: one gcloud invocation or HTTP
+    request, with nothing to tick against, so the feedback is the label
+    alone. Always flushed — every caller is about to block, and several hand
+    the terminal straight to a subprocess writing to the same fd."""
+    print(f"{label}...", file=out, flush=True)
+
+
 def _load_state() -> dict:
     return gns3conf.load_json(gns3conf.wrapper_state_path())
 
@@ -195,7 +204,7 @@ def _boot_and_wait_for_ssh(ctx: gcp.GcpContext, status: str, out) -> tuple:
     instance really is RUNNING.
     """
     if status != "RUNNING":
-        print(f"Starting {ctx.instance}...", file=out)  # gcloud shows its own progress here
+        _step(out, f"Starting {ctx.instance}")  # gcloud shows its own progress here
         gcp.start_instance(ctx)
         with _progress(out, "Waiting for instance to report RUNNING") as tick:
             gcp.wait_for_status(ctx, "RUNNING", on_tick=tick)
@@ -416,6 +425,15 @@ def cmd_scan(ctx: gcp.GcpContext, out=sys.stdout) -> int:
 
 
 def cmd_create(ctx: gcp.GcpContext, out=sys.stdout, dry_run: bool = False) -> int:
+    # Every step here is its own network round-trip, and each gcloud
+    # invocation costs a couple of seconds of its own startup before it even
+    # reaches the API — so create sat silent for the whole prelude, then
+    # silent again through instance creation. Unlike start/stop it has no
+    # poll loop to hang a _progress ticker off, so each step announces
+    # itself instead. flush is not optional: create_instance runs with
+    # capture=False, writing to the same fd directly, so an unflushed
+    # announcement can surface after the output of the step it announces.
+    _step(out, f"Checking whether {ctx.instance} already exists")
     if gcp.instance_describe(ctx) is not None:
         print(
             f"Instance {ctx.instance} already exists in {ctx.project}/{ctx.zone}. Nothing to create.",
@@ -423,6 +441,7 @@ def cmd_create(ctx: gcp.GcpContext, out=sys.stdout, dry_run: bool = False) -> in
         )
         return 0
 
+    _step(out, "Looking up your public IP")
     public_ip = gcp.get_public_ipv4()
     fw_name = _firewall_name(ctx.instance)
 
@@ -438,8 +457,16 @@ def cmd_create(ctx: gcp.GcpContext, out=sys.stdout, dry_run: bool = False) -> in
         return 0
 
     password = secrets.token_urlsafe(18)
+    _step(out, f"Opening firewall rule {fw_name} to {public_ip}/32")
     _ensure_firewall_rule(ctx, name=fw_name, source_range=f"{public_ip}/32")
 
+    # gcloud prints its own progress here — but it's the one piece of
+    # feedback create can't produce itself, so say what's starting and
+    # roughly how long it takes before handing the terminal over to it.
+    _step(
+        out,
+        f"Creating instance {ctx.instance} ({DEFAULT_MACHINE_TYPE}) — this takes up to a minute",
+    )
     gcp.create_instance(ctx, machine_type=DEFAULT_MACHINE_TYPE, tags=[DEFAULT_TAG])
 
     state = _load_state()
@@ -635,7 +662,7 @@ def cmd_stop(ctx: gcp.GcpContext, out=sys.stdout) -> int:
         print(f"{ctx.instance} is already TERMINATED.", file=out)
         return 0
 
-    print(f"Stopping {ctx.instance}...", file=out)  # gcloud shows its own progress here
+    _step(out, f"Stopping {ctx.instance}")  # gcloud shows its own progress here
     gcp.stop_instance(ctx)
     with _progress(out, "Waiting for instance to report TERMINATED") as tick:
         final_status = gcp.wait_for_status(ctx, "TERMINATED", on_tick=tick)

@@ -224,6 +224,39 @@ def test_create_new_instance_creates_firewall_and_instance_and_saves_state(monke
     assert len(entry["password"]) > 10
 
 
+def test_create_announces_each_step_before_running_it(monkeypatch):
+    # Regression: create used to run its whole prelude (describe, public IP
+    # lookup, firewall rule) and then instance creation with nothing printed
+    # at all, so a slow run was indistinguishable from a hang. Each step
+    # must announce itself *before* the call it covers, so the assertions
+    # below record call order interleaved with output, not just the text.
+    ctx = make_ctx()
+    events = []
+
+    def record(name, result):
+        events.append(name)
+        return result
+
+    monkeypatch.setattr(gcp, "instance_describe", lambda c: record("describe", None))
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: record("public_ip", "9.9.9.9"))
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: False)
+    monkeypatch.setattr(gcp, "create_firewall_rule", lambda c, **kw: record("firewall", None))
+    monkeypatch.setattr(gcp, "create_instance", lambda c, **kw: record("create_instance", None))
+
+    class Recorder(io.StringIO):
+        def write(self, text):
+            if text.strip():
+                events.append(f"out:{text.strip()}")
+            return super().write(text)
+
+    out = Recorder()
+    assert cli.cmd_create(ctx, out=out) == 0
+
+    # Every gcloud/HTTP call is immediately preceded by a line of output.
+    for call in ("describe", "public_ip", "firewall", "create_instance"):
+        assert events[events.index(call) - 1].startswith("out:"), f"{call} ran with no announcement"
+
+
 def test_create_reuses_existing_firewall_rule(monkeypatch):
     ctx = make_ctx()
     monkeypatch.setattr(gcp, "instance_describe", lambda c: None)
