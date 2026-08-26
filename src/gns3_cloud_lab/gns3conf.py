@@ -16,23 +16,33 @@ config-path algorithm does not check XDG_CONFIG_HOME at all.
 
 Two client-side config files live in the same directory, and must not be
 confused with each other (nor with that remote gns3_server.conf — three
-files, three different machines/formats, one shared naming pattern):
+files, three different machines/formats, one shared naming pattern).
+Both also change *filename* (not just content) on Windows: gns3-gui's
+LocalConfig/LocalServerConfig name them gns3_gui.ini / gns3_server.ini on
+Windows, and gns3_gui.conf / gns3_server.conf everywhere else — same
+directory, same format, extension only. gns3_gui_config_path() and
+gns3_local_server_conf_path() branch on platform.system() for this; every
+other function in this module (dir, pid, backups) is unaffected since
+those names don't change on Windows.
 
-- gns3_gui.conf — JSON. Servers.remote_servers is an *additional* compute
-  servers list (assignable per-node), not what the GUI itself connects to.
-- gns3_server.conf — INI (configparser), section [Server]. THIS is what
-  Preferences -> Server -> "Remote main server host" actually reads
-  (LocalServer.localServerSettings(), via LocalServerConfig in the real
-  gns3-gui source) when "Enable local server" is unchecked (auto_start =
-  False).
+- gns3_gui.conf / gns3_gui.ini — JSON. Servers.remote_servers is an
+  *additional* compute servers list (assignable per-node), not what the
+  GUI itself connects to.
+- gns3_server.conf / gns3_server.ini — INI (configparser), section
+  [Server]. THIS is what Preferences -> Server -> "Remote main server
+  host" actually reads (LocalServer.localServerSettings(), via
+  LocalServerConfig in the real gns3-gui source) when "Enable local
+  server" is unchecked (auto_start = False).
 
 References (each verified directly against the source at the URL given,
 not carried over from memory):
-- gns3/local_config.py — configDirectory(), isMainGui():
+- gns3/local_config.py — configDirectory(), _resetLoadConfig() (filename,
+  .ini on Windows vs .conf elsewhere), isMainGui():
   https://github.com/GNS3/gns3-gui/blob/c776d4ef3764b3db8ed21c8e4eedbd6cd388e5dc/gns3/local_config.py#L141-L179
   https://github.com/GNS3/gns3-gui/blob/c776d4ef3764b3db8ed21c8e4eedbd6cd388e5dc/gns3/local_config.py#L478-L520
-- gns3/local_server_config.py, gns3/local_server.py — LocalServerConfig,
-  localServerSettings(), auto_start gating local vs. remote:
+- gns3/local_server_config.py, gns3/local_server.py — LocalServerConfig
+  (same .ini-on-Windows filename split), localServerSettings(), auto_start
+  gating local vs. remote:
   https://github.com/GNS3/gns3-gui/blob/c776d4ef3764b3db8ed21c8e4eedbd6cd388e5dc/gns3/local_server_config.py#L27-L53
   https://github.com/GNS3/gns3-gui/blob/c776d4ef3764b3db8ed21c8e4eedbd6cd388e5dc/gns3/local_server.py#L212-L296
 - gns3/compute_manager.py — remoteComputes():
@@ -72,7 +82,11 @@ def gns3_gui_config_dir() -> Path:
 
 
 def gns3_gui_config_path() -> Path:
-    return gns3_gui_config_dir() / "gns3_gui.conf"
+    """gns3-gui's LocalConfig names this file gns3_gui.ini on Windows and
+    gns3_gui.conf everywhere else (same directory, same JSON content) —
+    verified against local_config.py's _resetLoadConfig()."""
+    name = "gns3_gui.ini" if platform.system() == "Windows" else "gns3_gui.conf"
+    return gns3_gui_config_dir() / name
 
 
 def gns3_gui_pid_path() -> Path:
@@ -80,11 +94,15 @@ def gns3_gui_pid_path() -> Path:
 
 
 def gns3_local_server_conf_path() -> Path:
-    """The client-side gns3_server.conf (INI) — see module docstring. Not
-    to be confused with the JSON file cli.py writes over SSH onto the VM,
-    which shares the same filename but lives on a different machine
+    """The client-side gns3_server.conf/.ini (INI format either way) — see
+    module docstring. gns3-gui's LocalServerConfig names this file
+    gns3_server.ini on Windows and gns3_server.conf everywhere else (same
+    directory), verified against local_server_config.py. Not to be
+    confused with the JSON file cli.py writes over SSH onto the VM, which
+    shares the .conf name on non-Windows but lives on a different machine
     entirely and uses a different format."""
-    return gns3_gui_config_dir() / "gns3_server.conf"
+    name = "gns3_server.ini" if platform.system() == "Windows" else "gns3_server.conf"
+    return gns3_gui_config_dir() / name
 
 
 def wrapper_state_dir() -> Path:

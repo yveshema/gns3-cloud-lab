@@ -47,6 +47,16 @@
   never goes through this — argv reaches it directly with no relaunch —
   so that path is unchanged from what was already confirmed live in the
   `_remote_setup_command` INI fix below.
+- `start` patched `gns3_gui.conf`/`gns3_server.conf` on Windows too, but
+  gns3-gui's GUI never reads those names there — Windows-reported and
+  confirmed against gns3-gui's own source (`local_config.py`'s
+  `_resetLoadConfig()`, `local_server_config.py`): both files are named
+  with a `.ini` extension instead of `.conf` on Windows specifically
+  (same directory, same content/format either way — JSON for the gui
+  file, INI for the server file). `gns3_gui_config_path()` and
+  `gns3_local_server_conf_path()` in `gns3conf.py` now branch on
+  `platform.system()` for the filename, same pattern already used by
+  `app_config_dir()`. Not live-tested on Windows (see below).
 
 ## 2026-08-21
 
@@ -154,6 +164,9 @@
   files, so no manual recovery is needed.
 
 ### Needs live-VM validation
+- The `.ini`-on-Windows filename fix (2026-08-26 entry above): confirmed
+  against gns3-gui's source, not yet against a real GNS3 GUI reading the
+  patched file on a Windows machine.
 - `enroll --ssh-user`/`start`'s reuse of it (2026-08-26 entry above): the
   `USER@INSTANCE` argv form itself against a real `gcloud compute ssh` and
   `gcloud compute scp`, and that it actually lands `start`'s SSH calls on

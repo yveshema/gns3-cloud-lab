@@ -28,7 +28,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gns3-2620-lab"
+name = "gns3-cloud-lab"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

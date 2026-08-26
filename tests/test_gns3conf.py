@@ -66,6 +66,16 @@ def test_gns3_gui_config_path_is_versioned(monkeypatch, tmp_path):
     assert gns3conf.gns3_gui_config_path() == tmp_path / ".config" / "GNS3" / "2.2" / "gns3_gui.conf"
 
 
+def test_gns3_gui_config_path_uses_ini_extension_on_windows(monkeypatch):
+    # gns3-gui's LocalConfig names this file gns3_gui.ini on Windows, not
+    # gns3_gui.conf — the GUI silently ignores a file with the wrong name
+    # (gns3conf module docstring; verified against local_config.py's
+    # _resetLoadConfig()).
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("APPDATA", r"C:\Users\user\AppData\Roaming")
+    assert gns3conf.gns3_gui_config_path().name == "gns3_gui.ini"
+
+
 def test_wrapper_state_path_is_separate_from_gns3(monkeypatch, tmp_path):
     monkeypatch.setattr(gns3conf.platform, "system", lambda: "Linux")
     monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
@@ -93,6 +103,14 @@ def test_gns3_local_server_conf_path_sits_next_to_gui_config(monkeypatch, tmp_pa
     monkeypatch.setattr(gns3conf.Path, "home", lambda: tmp_path)
     assert gns3conf.gns3_local_server_conf_path().parent == gns3conf.gns3_gui_config_path().parent
     assert gns3conf.gns3_local_server_conf_path().name == "gns3_server.conf"
+
+
+def test_gns3_local_server_conf_path_uses_ini_extension_on_windows(monkeypatch):
+    # Same Windows-only rename as gns3_gui.conf/.ini, but for
+    # LocalServerConfig — verified against local_server_config.py.
+    monkeypatch.setattr(gns3conf.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("APPDATA", r"C:\Users\user\AppData\Roaming")
+    assert gns3conf.gns3_local_server_conf_path().name == "gns3_server.ini"
 
 
 def test_wrapper_local_server_conf_backup_path_lives_in_wrapper_state_dir(monkeypatch, tmp_path):
