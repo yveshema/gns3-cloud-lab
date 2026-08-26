@@ -2,7 +2,7 @@
 
 Per-user, user-owned GCP fallback for BCIT networking-2620's GNS3 labs.
 Primary delivery is local GNS3 on Windows 11; this exists for laptops that
-can't run it locally (notably Apple Silicon Macs).
+can't run it locally (notably Apple Silicon Macs) or need more RAM.
 
 ## Status
 

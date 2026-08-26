@@ -17,8 +17,8 @@
   rights (verified against uv's own docs: Windows tool executables are
   copied, not symlinked, for the same reason). Placed in whatever
   directory `uv tool dir --bin` reports, so it's on PATH under the exact
-  same conditions the real command already is. No shell aliases, no
-  `.bashrc`/profile edits. `uninstall.py` removes it again, but only if it
+  same conditions the real command already is. 
+  `uninstall.py` removes it again, but only if it
   still points at this tool's own command — never something else that
   happens to be named `gclab`. Verified end-to-end on Linux (create,
   reinstall no-ops, guard against a pre-existing `gclab`, uninstall
