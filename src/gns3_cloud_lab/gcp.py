@@ -364,6 +364,22 @@ def ssh_run(
     # Each call is a fresh login shell — callers that need a group
     # membership change to take effect must issue it as a separate ssh_run
     # call from the one that relies on it.
+    #
+    # gcloud on Windows is gcloud.cmd, a batch file. Windows can't launch a
+    # batch file directly, so CreateProcess silently relaunches it through
+    # `cmd.exe /c`, which rebuilds and re-parses a single command line out
+    # of our whole argv. A single-line argument survives that round trip
+    # (confirmed: spaces, double quotes, $(), pipes, and semicolons all
+    # arrive at the VM intact) but a real newline does not — cmd.exe has
+    # no way to represent one, and the argument comes out scrambled,
+    # starting with a fragment of cmd.exe's own COMSPEC path. Reproduced
+    # live against a real VM from the Windows side; the fix below (upload
+    # the script, run it by name) was verified end to end the same way.
+    # Only the batch shim needs this: a real gcloud binary (Linux/macOS)
+    # receives argv directly with no relaunch, so multi-line commands
+    # already reach it unmodified — that path is untouched below.
+    if "\n" in command and ctx.gcloud_exe.lower().endswith((".cmd", ".bat")):
+        return _ssh_run_via_upload(ctx, command, check=check, timeout=timeout)
     return ctx.run(
         [
             "compute",
@@ -375,6 +391,71 @@ def ssh_run(
             ctx.zone,
             "--command",
             command,
+        ],
+        check=check,
+        timeout=timeout,
+    )
+
+
+# Fixed name, not a per-call temp name: each ssh_run call is its own
+# gcloud invocation with nothing to correlate a random name back to, and
+# the upload-then-run-then-delete sequence below always cleans it up
+# before returning, so nothing accumulates.
+_REMOTE_UPLOAD_NAME = ".gclab_cmd.sh"
+
+
+def _ssh_run_via_upload(
+    ctx: GcpContext, command: str, *, check: bool, timeout: float | None
+) -> subprocess.CompletedProcess:
+    """The Windows-only path ssh_run switches to for multi-line commands —
+    see the comment there.
+
+    newline="\\n" on the local temp file forces LF line endings regardless
+    of the host's text-mode default: a CRLF would put a trailing \\r on
+    the heredoc delimiter line inside _remote_setup_command's script, so
+    it no longer matches the opening `<<'...'` byte-for-byte and the
+    heredoc never closes.
+    """
+    import os
+    import tempfile
+
+    fd, local_path = tempfile.mkstemp(suffix=".sh")
+    try:
+        with os.fdopen(fd, "w", newline="\n") as f:
+            f.write(command)
+        ctx.run(
+            [
+                "compute",
+                "scp",
+                local_path,
+                f"{ctx.instance}:{_REMOTE_UPLOAD_NAME}",
+                "--project",
+                ctx.project,
+                "--zone",
+                ctx.zone,
+            ],
+            timeout=timeout,
+        )
+    finally:
+        Path(local_path).unlink(missing_ok=True)
+    # `; ec=$?; rm -f ...; exit $ec`, not `&&`: the remote temp file must
+    # be cleaned up and the *script's* exit code must survive even when
+    # the script itself fails (e.g. _remote_setup_command's `exit 1` on a
+    # missing group) — `cmd1; cmd2` reports cmd2's status, so cmd1's has
+    # to be captured before cmd2 (the cleanup) can overwrite it. This
+    # whole line is itself single-line, so it's exactly the kind of
+    # command already confirmed safe to pass straight through --command.
+    return ctx.run(
+        [
+            "compute",
+            "ssh",
+            ctx.instance,
+            "--project",
+            ctx.project,
+            "--zone",
+            ctx.zone,
+            "--command",
+            f"bash {_REMOTE_UPLOAD_NAME}; ec=$?; rm -f {_REMOTE_UPLOAD_NAME}; exit $ec",
         ],
         check=check,
         timeout=timeout,

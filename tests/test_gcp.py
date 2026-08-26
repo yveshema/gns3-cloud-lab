@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -532,6 +533,105 @@ def test_ssh_run_check_false_is_passed_through(monkeypatch):
     monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(kw))
     gcp.ssh_run(ctx, "cat maybe-missing", check=False)
     assert captured["check"] is False
+
+
+def test_ssh_run_multiline_on_real_gcloud_binary_is_unchanged(monkeypatch):
+    # Regression guard for the Windows fix below: a real gcloud binary
+    # (Linux/macOS) never goes through cmd.exe, so a multi-line command
+    # must still go straight through --command exactly as before — this
+    # is the path that was already confirmed live.
+    ctx = make_ctx(gcloud_exe="gcloud")
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(args=args, kwargs=kw))
+    gcp.ssh_run(ctx, "echo one\necho two", timeout=30)
+    assert captured["args"] == [
+        "compute", "ssh", "gns3-lab",
+        "--project", "proj", "--zone", "us-west1-b",
+        "--command", "echo one\necho two",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ssh_run — Windows batch-shim upload path
+#
+# gcloud.cmd is relaunched through cmd.exe, which mangles a multi-line
+# --command argument (confirmed against a live VM — see CHANGELOG.md and
+# the comment on ssh_run). These tests cover the workaround: upload the
+# script and run it by name instead.
+# ---------------------------------------------------------------------------
+
+
+def test_ssh_run_single_line_on_cmd_shim_is_unchanged(monkeypatch):
+    # No newline means nothing for cmd.exe to mangle — the direct
+    # --command path is fine even on the batch shim, and should be
+    # preferred since it's one round trip instead of three.
+    ctx = make_ctx(gcloud_exe="gcloud.CMD")
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(args=args, kwargs=kw))
+    gcp.ssh_run(ctx, "echo hi", timeout=30)
+    assert captured["args"] == [
+        "compute", "ssh", "gns3-lab",
+        "--project", "proj", "--zone", "us-west1-b",
+        "--command", "echo hi",
+    ]
+
+
+def test_ssh_run_multiline_on_cmd_shim_uploads_and_runs_by_name(monkeypatch):
+    ctx = make_ctx(gcloud_exe="gcloud.CMD")
+    calls = []
+    uploaded_content = {}
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        if args[:2] == ["compute", "scp"]:
+            uploaded_content["text"] = Path(args[2]).read_text()
+            uploaded_content["local_path"] = args[2]
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(ctx, "run", fake_run)
+    script = 'set -e\necho "a $(whoami)"\n'
+    result = gcp.ssh_run(ctx, script, check=False, timeout=45)
+
+    assert len(calls) == 2
+    scp_args, ssh_args = calls
+    assert scp_args[:2] == ["compute", "scp"]
+    assert scp_args[3:] == [
+        "gns3-lab:.gclab_cmd.sh", "--project", "proj", "--zone", "us-west1-b",
+    ]
+    assert ssh_args == [
+        "compute", "ssh", "gns3-lab",
+        "--project", "proj", "--zone", "us-west1-b",
+        "--command", "bash .gclab_cmd.sh; ec=$?; rm -f .gclab_cmd.sh; exit $ec",
+    ]
+    # The uploaded file carries the script byte-for-byte...
+    assert uploaded_content["text"] == script
+    # ...and the local temp file is gone once ssh_run returns — nothing
+    # left behind regardless of check.
+    assert not Path(uploaded_content["local_path"]).exists()
+    assert isinstance(result, FakeCompletedProcess)
+
+
+def test_ssh_run_multiline_on_cmd_shim_passes_check_and_timeout_to_final_ssh(monkeypatch):
+    # The scp upload itself always uses check's default (True) — a failed
+    # upload is an infra failure, not the kind of "command may legitimately
+    # fail" case check=False exists for. Only the final ssh call (running
+    # the uploaded script) should see the caller's check value.
+    ctx = make_ctx(gcloud_exe="gcloud.CMD")
+    kwargs_by_call = []
+
+    def fake_run(args, **kw):
+        kwargs_by_call.append((args[:2], kw))
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(ctx, "run", fake_run)
+    gcp.ssh_run(ctx, "line one\nline two", check=False, timeout=45)
+
+    scp_call, ssh_call = kwargs_by_call
+    assert scp_call[0] == ["compute", "scp"]
+    assert "check" not in scp_call[1]
+    assert ssh_call[0] == ["compute", "ssh"]
+    assert ssh_call[1]["check"] is False
+    assert ssh_call[1]["timeout"] == 45
 
 
 # ---------------------------------------------------------------------------

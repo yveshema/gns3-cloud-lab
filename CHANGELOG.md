@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-26
+
+### Fixed
+- `start` failed on Windows with `bash: line 1: C:WINDOWSsystem32cmd.exe:
+  command not found` the moment it reached `_remote_setup_command`'s
+  multi-line `--command`. Root cause: `gcloud` on Windows is `gcloud.cmd`,
+  a batch file, which Windows can't launch directly — `CreateProcess`
+  silently relaunches it through `cmd.exe /c`, and that relaunch rebuilds
+  a single command line out of our whole argv. A single-line argument
+  survives the round trip (confirmed individually: spaces, double quotes,
+  `$()`, pipes, semicolons), but a real newline does not — cmd.exe has no
+  way to represent one, and the argument arrives at the VM scrambled,
+  starting with a fragment of cmd.exe's own `COMSPEC` path. Reproduced
+  live against a real VM from the Windows side, one character class at a
+  time, and the exact reported failure reproduced on command.
+  `gcp.ssh_run` now detects a multi-line command bound for the batch shim
+  (`gcloud_exe` ending in `.cmd`/`.bat`) and routes it through
+  `gcloud compute scp` + `--command "bash <name>"` instead of passing the
+  script itself through `--command` — verified end to end against the
+  same VM, including that the script's own exit code (not the cleanup
+  `rm`'s) is what the caller sees. A real gcloud binary (Linux/macOS)
+  never goes through this — argv reaches it directly with no relaunch —
+  so that path is unchanged from what was already confirmed live in the
+  `_remote_setup_command` INI fix below.
+
 ## 2026-08-21
 
 ### Added
