@@ -1,5 +1,159 @@
 # Changelog
 
+## 2026-09-04
+
+### Added
+- `provision.sh` installs libvirt, so a GNS3 NAT node works. The NAT node
+  is a front end for libvirt's `default` network (virbr0,
+  192.168.122.0/24), and libvirt was never installed at all — confirmed on
+  the real VM: no virbr0, no libvirt units. New packages, in this order:
+  `dnsmasq-base`, `libvirt-daemon-system`, `libvirt-clients`, `iptables`.
+  The order is load-bearing. `dnsmasq-base` is only a **Recommends** of
+  `libvirt-daemon-system` (checked with `apt-cache show`), and
+  `apt_install_one` installs with `--no-install-recommends`, so installing
+  libvirt on its own produces a `default` network that cannot start —
+  visibly identical to libvirt being missing entirely, from a completely
+  different cause. Installing dnsmasq first lets libvirt's own postinst
+  start the network.
+- `apt-mark manual iptables`, which is not the same thing as installing it.
+  libvirt's `Depends: iptables | firewalld` is already satisfied by the
+  iptables that arrived as `docker.io`'s automatic dependency, so
+  `apt_install_one` returns early at its `dpkg -s` check and the
+  auto-installed flag is never cleared. Removing Docker some months later
+  would then let `autoremove` take iptables with it, and libvirt networks
+  would stop starting with nothing on the machine to explain why.
+- `ensure_libvirt_network()`, run on every boot and deliberately outside
+  the sentinel gate: enables `virtnetworkd.service` if that unit exists,
+  otherwise `libvirtd.service` (Ubuntu 24.04's libvirt 10.0.0 is still
+  monolithic, so the unit is probed for rather than assumed), then
+  autostarts and starts the network if it isn't already. Defining the
+  network from `/usr/share/libvirt/networks/default.xml` is only a
+  fallback: `libvirt-daemon-config-network` is a hard dependency of
+  `libvirt-daemon-system` and both ships and autostarts `default`.
+- `assert_libvirt()` — fatal if virbr0 lacks 192.168.122.1/24, or if
+  `default` is not both active and autostart. It retries briefly first,
+  because libvirt is socket-activated and the network may still be coming
+  up when the startup script reaches that point. It deliberately does not
+  check virbr0's link state: a bridge borrows its carrier from its ports,
+  so virbr0 reads DOWN/NO-CARRIER on a perfectly healthy machine with no
+  guest attached.
+- `report_firewall_state()` — logs the libvirt version, the FORWARD policy
+  and the FORWARD/LIBVIRT_FWO/LIBVIRT_FWI rules to the journal on every
+  boot. Informational, never fatal. This is insurance for the one thing
+  the NAT node depends on that this script does not control, described
+  below.
+- `--dry-run`. Every mutating command routes through a `run()` wrapper that
+  prints instead of executing, and the apt work is simulated with
+  `apt-get install -s` — apt's own resolver running for real against the
+  real package lists, rather than a guess about what it would do. Read-only
+  probes deliberately don't go through the wrapper, so a dry run still
+  reports which guards would fire. Assertions are skipped under `--dry-run`
+  and say so, since they check the result of steps that didn't run. A flag
+  rather than an environment variable because GCE runs startup scripts with
+  no argv at all, so the flag can only ever arrive from a human or from
+  `upgrade --dry-run` running the script over SSH.
+
+### Changed
+- uBridge is pinned to tag **v1.2.1**. It was a `--depth 1` clone of
+  master, which meant `create` installed whatever HEAD was on the day it
+  ran. Upstream is already past this (v1.2.1 is commit 9359c6a, and v1.2.2
+  exists), so a `create` today would have installed a version nothing in
+  this repo has ever been validated against, and a different one from what
+  a student who ran `create` last week is running. v1.2.1 is what the real
+  VM runs and what everything here was checked against. This is a
+  behaviour change to `create`, not only part of the NAT fix. New
+  `assert_ubridge_version`, matching `assert_vpcs`.
+- `build_ubridge` and `build_vpcs` skip the clone and build when the
+  installed binary already reports the wanted version. `build_ubridge`
+  re-applies `setcap` even on the skip path: `install` replaces the file
+  and drops its capabilities, a hand-placed binary may never have had them,
+  and `assert_ubridge` is fatal without them.
+- The sentinel now gates only the install steps. The libvirt network setup,
+  the firewall report and the assertions run on every boot.
+
+### Fixed
+- `install_gns3_server` killed the entire script on any second run.
+  `pipx install` exits non-zero when the package is already present, and
+  under `set -euo pipefail` that took out everything after it — which is
+  what made re-running `provision.sh` over an existing VM impossible,
+  sentinel or no sentinel. It now compares
+  `/usr/local/bin/gns3server --version` against the pin, skips when they
+  match, and passes `--force` only on a real mismatch. The version probe
+  fails open: an unparseable or absent banner counts as a mismatch, so the
+  cost of an unexpected output format is a reinstall, never a wrong skip.
+
+### Ruled out, with the evidence
+- **No `firewall_backend` setting in `/etc/libvirt/network.conf`.** That
+  setting arrived in libvirt 10.4; Ubuntu 24.04 ships 10.0.0-2ubuntu8.16,
+  where it does not exist. Do not add it.
+- **No DOCKER-USER workaround unit.** Docker (docker.io 29.1.3) does set
+  `-P FORWARD DROP` and does install DOCKER-USER and DOCKER-FORWARD, but on
+  Ubuntu 24.04 it does not block libvirt guest egress, confirmed live on
+  the VM. The FORWARD chain jumps to libvirt's own chains *before*
+  Docker's:
+
+      -A FORWARD -j LIBVIRT_FWX / LIBVIRT_FWI / LIBVIRT_FWO
+      -A FORWARD -j DOCKER-USER
+      -A FORWARD -j DOCKER-FORWARD
+
+  and those chains carry `-s 192.168.122.0/24 -i virbr0 -j ACCEPT`
+  (LIBVIRT_FWO) and the matching RELATED,ESTABLISHED rule inbound
+  (LIBVIRT_FWI). ACCEPT in a user-defined chain is a terminating verdict,
+  so guest traffic never reaches Docker's chains and the DROP policy never
+  applies to it. A Fedora workstation behaves differently because its
+  libvirt 12 uses the nftables backend — a different platform, not this
+  one. `report_firewall_state()` exists precisely because this ordering is
+  not something this script sets: if a future Docker or libvirt package
+  reorders it, the journal says so on the next boot instead of the
+  breakage surfacing weeks later as "the NAT node can't reach the
+  internet".
+
+### Not faults — don't code around them
+- virbr0 reads DOWN/NO-CARRIER while no ports are attached. A bridge takes
+  its carrier from its ports.
+- dnsmasq shows two processes with identical `argv`. The second is the
+  `--dhcp-script` helper. The `--interface=virbr0` binding lives in
+  `/var/lib/libvirt/dnsmasq/default.conf`, not on the command line.
+
+### Tested
+- `shellcheck` clean and `bash -n` clean.
+- 40 new unit tests in `tests/test_provision_sh.py` covering the skip
+  guards, install order, the libvirt state machine, the retry loop, the
+  firewall report's never-fatal behaviour and `--dry-run`. They source
+  `provision.sh` (its last line is now guarded on `BASH_SOURCE`, so
+  sourcing gets the functions and no side effects) with stub executables
+  ahead of the real ones on PATH, and assert both what ran and what
+  didn't. Not bats — it isn't available in the dev container; pytest is,
+  and is what the rest of the suite already uses.
+- A full `main --dry-run` was walked through against a simulated
+  gns3-lab-shaped machine (libvirt absent, uBridge 1.2.1 and VPCS 0.6.2
+  already installed, no sentinel): it skips both builds, simulates the
+  four new packages, and reports the pipx reinstall — no rebuild of 1.2.1
+  over 1.2.1.
+
+### Needs live-VM validation
+- All of the above on a real VM. Nothing in this entry has been run against
+  GCP; the findings it is built on were observed on the VM, but the code
+  written from them has not been.
+- That `ubridge -v` prints a parseable `1.2.1`, which both the build skip
+  guard and `assert_ubridge_version` depend on. The guard fails open (an
+  unrecognised banner rebuilds), but the assertion is fatal.
+- That `gns3server --version` prints a parseable version — same shape, and
+  the same fail-open guard, but no assertion behind it.
+- That `virsh net-info default` labels its fields exactly `Active:` and
+  `Autostart:` on libvirt 10.0.0, which `libvirt_net_field` parses on.
+- Whether `apt-get install -s` under `--dry-run` gives a usable answer when
+  run over SSH as a non-root user; the probes that read machine state
+  (`virsh net-info` against qemu:///system in particular) need root, so a
+  dry run should be run with `sudo`.
+- A VM provisioned before this change has a sentinel and no libvirt, so
+  `ensure_libvirt_network` is fatal there on every boot until `upgrade`
+  re-provisions it. The message says so. Nothing else in the script runs
+  after that point, but the only things after it are the assertions and the
+  sentinel write, and `start`/`stop` don't depend on the startup script
+  succeeding — so the expected impact is a FATAL line in the journal and
+  nothing more. Unconfirmed.
+
 ## 2026-08-26
 
 ### Added
