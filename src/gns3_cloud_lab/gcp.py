@@ -263,6 +263,38 @@ def _bundled_provision_script_context():
     return resources.as_file(resources.files("gns3_cloud_lab") / "provision.sh")
 
 
+def bundled_provision_script():
+    """Context manager yielding a real filesystem path to today's bundled
+    provision.sh — the same resolution create_instance uses by default,
+    exposed publicly for cli.cmd_upgrade, which also needs today's local
+    script (both to push as instance metadata and, for --dry-run, to
+    upload and run in place)."""
+    return _bundled_provision_script_context()
+
+
+def scp_upload_file(
+    ctx: GcpContext, local_path: Path, remote_name: str, *, timeout: float | None = None
+) -> None:
+    """Upload LOCAL_PATH to ~/REMOTE_NAME on the instance. Same gcloud
+    compute scp mechanism _ssh_run_via_upload uses internally for the
+    Windows batch-shim workaround, generalized here for a caller (upgrade's
+    --dry-run path) that needs to run a real script by name on the VM,
+    not just a command string."""
+    ctx.run(
+        [
+            "compute",
+            "scp",
+            str(local_path),
+            f"{_ssh_target(ctx)}:{remote_name}",
+            "--project",
+            ctx.project,
+            "--zone",
+            ctx.zone,
+        ],
+        timeout=timeout,
+    )
+
+
 def create_instance(
     ctx: GcpContext,
     *,
@@ -303,6 +335,26 @@ def create_instance(
             startup_script_path = stack.enter_context(_bundled_provision_script_context())
         args.append(f"--metadata-from-file=startup-script={startup_script_path}")
         ctx.run(args, capture=False)
+
+
+def add_metadata_startup_script(ctx: GcpContext, path: Path) -> None:
+    """Push PATH as the instance's startup-script metadata, same flag
+    create_instance uses at creation time — GCE only re-runs it on boot, so
+    upgrade must also invoke google_metadata_script_runner itself (see
+    cli.cmd_upgrade) rather than relying on this call alone."""
+    ctx.run(
+        [
+            "compute",
+            "instances",
+            "add-metadata",
+            ctx.instance,
+            "--project",
+            ctx.project,
+            "--zone",
+            ctx.zone,
+            f"--metadata-from-file=startup-script={path}",
+        ]
+    )
 
 
 def start_instance(ctx: GcpContext) -> None:
@@ -371,7 +423,12 @@ def _ssh_target(ctx: GcpContext) -> str:
 
 
 def ssh_run(
-    ctx: GcpContext, command: str, *, check: bool = True, timeout: float | None = 60
+    ctx: GcpContext,
+    command: str,
+    *,
+    check: bool = True,
+    timeout: float | None = 60,
+    capture: bool = True,
 ) -> subprocess.CompletedProcess:
     # Each call is a fresh login shell — callers that need a group
     # membership change to take effect must issue it as a separate ssh_run
@@ -391,7 +448,7 @@ def ssh_run(
     # receives argv directly with no relaunch, so multi-line commands
     # already reach it unmodified — that path is untouched below.
     if "\n" in command and ctx.gcloud_exe.lower().endswith((".cmd", ".bat")):
-        return _ssh_run_via_upload(ctx, command, check=check, timeout=timeout)
+        return _ssh_run_via_upload(ctx, command, check=check, timeout=timeout, capture=capture)
     return ctx.run(
         [
             "compute",
@@ -406,6 +463,7 @@ def ssh_run(
         ],
         check=check,
         timeout=timeout,
+        capture=capture,
     )
 
 
@@ -417,7 +475,7 @@ _REMOTE_UPLOAD_NAME = ".gclab_cmd.sh"
 
 
 def _ssh_run_via_upload(
-    ctx: GcpContext, command: str, *, check: bool, timeout: float | None
+    ctx: GcpContext, command: str, *, check: bool, timeout: float | None, capture: bool = True
 ) -> subprocess.CompletedProcess:
     """The Windows-only path ssh_run switches to for multi-line commands —
     see the comment there.
@@ -476,6 +534,7 @@ def _ssh_run_via_upload(
         ],
         check=check,
         timeout=timeout,
+        capture=capture,
     )
 
 

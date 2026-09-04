@@ -1,4 +1,5 @@
 import configparser
+import contextlib
 import io
 import json
 import shutil
@@ -898,6 +899,240 @@ def test_stop_running_instance_stops_and_waits(monkeypatch):
     assert cli.cmd_stop(ctx, out=out) == 0
     assert called == [True]
     assert "TERMINATED" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# cmd_upgrade
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _provision_script_ctx(path):
+    yield path
+
+
+def test_upgrade_refuses_when_gui_is_running(monkeypatch):
+    ctx = make_ctx()
+    monkeypatch.setattr(gns3conf, "gui_is_running", lambda *a, **k: True)
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    assert "close it first" in out.getvalue().lower()
+
+
+def test_upgrade_without_local_record_fails(monkeypatch):
+    ctx = make_ctx()
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    assert "--enroll" in out.getvalue() and "--create" in out.getvalue()
+
+
+def test_upgrade_refuses_when_vm_not_running(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "TERMINATED")
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    assert "--start first" in out.getvalue()
+
+
+def test_upgrade_refuses_when_no_sentinel(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=1, stdout=""))
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    assert "sentinel" in out.getvalue().lower()
+
+
+def test_upgrade_sentinel_check_also_refuses_under_dry_run(monkeypatch, tmp_path):
+    # A dry run of a command that doesn't apply to this VM would be
+    # misleading, not just unsafe — this check must not be skipped just
+    # because --dry-run was passed.
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=1, stdout=""))
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out, dry_run=True) == 1
+    assert "sentinel" in out.getvalue().lower()
+
+
+def test_upgrade_dry_run_uploads_and_runs_without_stopping_server(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+
+    calls = []
+
+    def fake_ssh_run(c, command, **k):
+        calls.append(command)
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+    uploaded = []
+    monkeypatch.setattr(gcp, "scp_upload_file", lambda c, local, remote, **k: uploaded.append((local, remote)))
+    monkeypatch.setattr(
+        gcp, "add_metadata_startup_script", lambda c, path: (_ for _ in ()).throw(AssertionError("no metadata push under --dry-run"))
+    )
+
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out, dry_run=True) == 0
+
+    assert uploaded == [(script, cli._REMOTE_PROVISION_UPLOAD_NAME)]
+    assert not any("kill -TERM" in c for c in calls)  # stop skipped
+    assert not any("pgrep -x ubridge" in c for c in calls)  # orphan check skipped
+    assert any(c.startswith(f"sudo bash {cli._REMOTE_PROVISION_UPLOAD_NAME} --dry-run") for c in calls)
+
+
+def test_upgrade_dry_run_uses_capture_false_and_long_timeout(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+    monkeypatch.setattr(gcp, "scp_upload_file", lambda *a, **k: None)
+
+    captured = {}
+
+    def fake_ssh_run(c, command, **k):
+        if command.startswith("sudo bash"):
+            captured.update(k)
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+
+    assert cli.cmd_upgrade(ctx, out=io.StringIO(), dry_run=True) == 0
+    assert captured["capture"] is False
+    assert captured["timeout"] == 600
+
+
+def test_upgrade_refuses_on_orphaned_ubridge_after_stopping_server(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+
+    def fake_ssh_run(c, command, **k):
+        if command.startswith("test -f"):
+            return _fake_completed(returncode=0, stdout="")
+        if "pgrep -x ubridge" in command:
+            return _fake_completed(returncode=0, stdout="PID ELAPSED CMD\n4821 120 /usr/local/bin/ubridge\n")
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+    monkeypatch.setattr(
+        gcp, "add_metadata_startup_script", lambda c, path: (_ for _ in ()).throw(AssertionError("must not proceed past an orphan"))
+    )
+
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    text = out.getvalue()
+    assert "orphaned ubridge" in text
+    assert "4821" in text
+
+
+def test_upgrade_real_run_stops_server_before_pushing_metadata(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+
+    events = []
+
+    def fake_ssh_run(c, command, **k):
+        if command.startswith("test -f"):
+            return _fake_completed(returncode=0, stdout="")
+        if "pgrep -x ubridge" in command:
+            return _fake_completed(returncode=0, stdout="")
+        if "kill -TERM" in command:
+            events.append("server_stopped")
+        elif command.startswith("sudo rm -f"):
+            events.append("sentinel_cleared")
+        elif command == "sudo google_metadata_script_runner startup":
+            events.append("runner_invoked")
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+    monkeypatch.setattr(gcp, "add_metadata_startup_script", lambda c, path: events.append("metadata_pushed"))
+
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 0
+    assert events == ["server_stopped", "metadata_pushed", "sentinel_cleared", "runner_invoked"]
+    assert "upgraded" in out.getvalue()
+
+
+def test_upgrade_real_run_uses_capture_false_and_long_timeout_for_the_runner(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+    monkeypatch.setattr(gcp, "add_metadata_startup_script", lambda c, path: None)
+
+    captured = {}
+
+    def fake_ssh_run(c, command, **k):
+        if command == "sudo google_metadata_script_runner startup":
+            captured.update(k)
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+
+    assert cli.cmd_upgrade(ctx, out=io.StringIO()) == 0
+    assert captured["capture"] is False
+    assert captured["timeout"] == 600
+
+
+def test_upgrade_reports_failure_when_runner_returns_nonzero(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(gcp, "bundled_provision_script", lambda: _provision_script_ctx(script))
+    monkeypatch.setattr(gcp, "add_metadata_startup_script", lambda c, path: None)
+
+    def fake_ssh_run(c, command, **k):
+        if command == "sudo google_metadata_script_runner startup":
+            return _fake_completed(returncode=1, stdout="")
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+
+    out = io.StringIO()
+    assert cli.cmd_upgrade(ctx, out=out) == 1
+    assert "failed" in out.getvalue().lower()
+
+
+def test_parser_upgrade_accepts_dry_run():
+    args = cli.build_parser().parse_args(["upgrade", "--dry-run"])
+    assert args.command == "upgrade"
+    assert args.dry_run is True
+
+
+def test_main_upgrade_passes_dry_run_through(monkeypatch):
+    monkeypatch.setattr(gcp, "find_gcloud", lambda: "gcloud")
+    monkeypatch.setattr(gcp, "get_active_project", lambda exe, cfg: "active-proj")
+    monkeypatch.setattr(gcp, "get_active_zone", lambda exe, cfg: "active-zone")
+    called = {}
+
+    def fake_upgrade(ctx, **kw):
+        called.update(kw)
+        return 0
+
+    monkeypatch.setitem(cli._COMMANDS, "upgrade", fake_upgrade)
+    assert cli.main(["upgrade", "--dry-run"]) == 0
+    assert called["dry_run"] is True
 
 
 # ---------------------------------------------------------------------------

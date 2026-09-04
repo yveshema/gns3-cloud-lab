@@ -52,6 +52,52 @@
   rather than an environment variable because GCE runs startup scripts with
   no argv at all, so the flag can only ever arrive from a human or from
   `upgrade --dry-run` running the script over SSH.
+- `upgrade` CLI command (with `--dry-run`), for re-running today's
+  `provision.sh` against an already-provisioned, running VM without a full
+  `stop`/`create` cycle. Refusal order: GNS3 running locally (upgrading
+  stops the gns3server the GUI may be connected to, dropping a live lab
+  session with no warning) → no local state record → VM not RUNNING (this
+  command deliberately does not boot the VM itself — it needs SSH access to
+  invoke `google_metadata_script_runner startup` directly, since GCE only
+  re-runs the startup-script metadata key on boot, not on a live metadata
+  update) → no `/var/lib/gns3-cloud-lab/provisioned` sentinel on the VM
+  (checked even under `--dry-run`, since a dry run of a command that
+  doesn't apply would be misleading). A real run then stops gns3server via
+  its `~/gns3server.pid` convention (SIGTERM, then SIGKILL if still alive
+  after a brief wait — `upgrade` owns this process's lifecycle, so killing
+  it automatically is safe) and checks for an orphaned `ubridge` afterward;
+  finding one refuses and reports it rather than killing it, since an
+  orphan surviving gns3server's own graceful shutdown is unexpected, not a
+  routine "someone's using it" case, and ubridge holds
+  `cap_net_admin`/`cap_net_raw` with no guarantee blind killing leaves
+  kernel-side state clean. `--dry-run` instead uploads today's local
+  `provision.sh` and runs it in place with `sudo bash ... --dry-run`,
+  touching nothing else. A real run pushes today's `provision.sh` as the
+  instance's startup-script metadata, clears the sentinel, then invokes
+  `sudo google_metadata_script_runner startup` over SSH with a 600s
+  timeout (a version mismatch can trigger a from-source rebuild of
+  ubridge/VPCS) and reports success/failure from its exit code — it does
+  not itself relaunch gns3server, so the user is told to run `start`
+  afterward.
+- `gcp.ssh_run` (and its Windows batch-shim path, `_ssh_run_via_upload`)
+  gains `capture: bool = True`, so `upgrade` can let
+  `google_metadata_script_runner`'s output stream live instead of being
+  buffered and dumped afterward — same reasoning `create`/`start`/`stop`
+  already use `capture=False` for. Default `True` leaves every existing
+  caller unaffected. On the upload path, only the final "run the uploaded
+  script" SSH call sees the caller's `capture` value; the `scp` upload
+  itself is unaffected, same treatment as `check`/`timeout` there already.
+- `gcp.add_metadata_startup_script` — `gcloud compute instances
+  add-metadata --metadata-from-file=startup-script=...` against an
+  existing instance, mirroring `create_instance`'s use of the same flag at
+  creation time.
+- `gcp.scp_upload_file` and `gcp.bundled_provision_script` — the former
+  generalizes the `scp` upload `_ssh_run_via_upload` already did
+  internally, for a caller (`upgrade --dry-run`) that needs to run a real
+  script by name on the VM rather than a command string; the latter
+  publicly exposes the same bundled-`provision.sh` resolution
+  `create_instance` already used privately, since `upgrade` also needs
+  today's local script.
 
 ### Changed
 - uBridge is pinned to tag **v1.2.1**. It was a `--depth 1` clone of
@@ -130,6 +176,33 @@
   already installed, no sentinel): it skips both builds, simulates the
   four new packages, and reports the pipx reinstall — no rebuild of 1.2.1
   over 1.2.1.
+- `upgrade`: new unit tests in `tests/test_cli.py` (one per refusal branch
+  — GUI running, no state, VM not RUNNING, no sentinel including under
+  `--dry-run`, orphaned ubridge after stopping gns3server) and
+  `tests/test_gcp.py` (`add_metadata_startup_script` argv assembly,
+  `capture` threaded through `ssh_run` and its upload path, regression
+  guard that existing `capture=True` callers are unaffected), plus
+  call-order assertions for both the `--dry-run` and real-run happy paths
+  (real path: gns3server stopped → metadata pushed → sentinel cleared →
+  runner invoked, in that order; dry-run path never stops gns3server or
+  checks for ubridge at all). Full suite: 241 passed. `ruff check` shows
+  only pre-existing findings in files/lines this branch didn't touch (a
+  `git diff --stat` confirms every changed file is insertion-only).
+
+### Confirmed live (this session)
+- `upgrade`, against a real VM and a real GNS3 GUI: refused while the VM
+  was still down (VM not RUNNING), refused once the VM was up but the GUI
+  was open, `--dry-run` uploaded and ran `provision.sh --dry-run` over SSH
+  without stopping the server or touching metadata, and a real run stopped
+  `gns3server`, found no orphaned `ubridge` afterward, pushed today's
+  `provision.sh` as the startup script, cleared the sentinel, and
+  re-invoked it via `sudo google_metadata_script_runner startup`
+  successfully. The pinned SSH user, `test -f`/`sudo rm -f`/`sudo bash
+  ... --dry-run` over `gcloud compute ssh --command`, and the `pgrep -x
+  ubridge` orphan check's no-orphan path all behaved as expected.
+- Not exercised: the test VM's uBridge/VPCS were already pinned to this
+  branch's versions, so the run never hit the from-source rebuild path —
+  see below for what that leaves open.
 
 ### Needs live-VM validation
 - All of the above on a real VM. Nothing in this entry has been run against
@@ -153,6 +226,16 @@
   sentinel write, and `start`/`stop` don't depend on the startup script
   succeeding — so the expected impact is a FATAL line in the journal and
   nothing more. Unconfirmed.
+- `upgrade`'s version-mismatch rebuild path: confirmed live above for a
+  same-version run (no rebuild triggered), but `sudo
+  google_metadata_script_runner startup` re-invoking `provision.sh`'s
+  from-source uBridge/VPCS rebuild, and whether the 600s SSH timeout is
+  enough headroom for it, remain unconfirmed — the test VM's versions
+  already matched today's pins. Also unconfirmed: the orphaned-`ubridge`
+  branch of the `pgrep -x ubridge` / `ps -o pid,etimes,cmd` check (only the
+  no-orphan path was exercised), since the parsing (`first_pid` from
+  line 2) assumes a stable `ps` column layout never checked against an
+  actual orphan.
 
 ## 2026-08-26
 

@@ -102,6 +102,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub.add_parser("stop", help="Stop the VM and restore your GUI config. Requires GNS3 to be closed.")
+    upgrade_parser = sub.add_parser(
+        "upgrade",
+        help=(
+            "Re-run today's provision.sh against an already-provisioned, running VM, "
+            "without a full stop/create cycle. Requires GNS3 to be closed and the VM "
+            "already started."
+        ),
+    )
+    upgrade_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what provision.sh would change without changing it"
+    )
     sub.add_parser("status", help="Print VM and server status")
     return parser
 
@@ -226,7 +237,7 @@ def _refuse_if_gui_running(out) -> bool:
     if not gns3conf.gui_is_running():
         return False
     print(
-        "GNS3 is currently running — close it first, then try again. "
+        "The GNS3 GUI is currently running — close it first, then try again. "
         "This command changes the GUI config file GNS3 reads from, and a "
         "running copy won't pick that up (and may overwrite it when it closes).",
         file=out,
@@ -401,6 +412,49 @@ def _remote_launch_command() -> str:
         "fi\n"
         'setsid nohup "$gns3server_bin" </dev/null >~/gns3server.log 2>&1 & '
         "echo $! > ~/gns3server.pid"
+    )
+
+
+# Hardcoded, not imported: provision.sh's own SENTINEL_DIR/SENTINEL are
+# shell variables in a bash script, not something Python can read at
+# import time. Keep this in sync with provision.sh by hand if that ever
+# changes.
+_SENTINEL_PATH = "/var/lib/gns3-cloud-lab/provisioned"
+_REMOTE_PROVISION_UPLOAD_NAME = ".gclab_provision.sh"
+
+
+def _remote_stop_gns3server_command() -> str:
+    # Same PID file _remote_launch_command established (see its comment on
+    # why not `pgrep -f`). upgrade owns this process's lifecycle — the PID
+    # file is one this tool wrote — so killing it automatically here is
+    # safe, unlike the ubridge check right after it.
+    return (
+        'if [ -f ~/gns3server.pid ]; then\n'
+        '  pid="$(cat ~/gns3server.pid)"\n'
+        '  if kill -0 "$pid" 2>/dev/null; then\n'
+        '    kill -TERM "$pid" 2>/dev/null\n'
+        '    for _ in $(seq 1 10); do\n'
+        '      kill -0 "$pid" 2>/dev/null || break\n'
+        '      sleep 1\n'
+        '    done\n'
+        '    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null\n'
+        '  fi\n'
+        '  rm -f ~/gns3server.pid\n'
+        'fi'
+    )
+
+
+def _ubridge_orphan_check_command() -> str:
+    # `pgrep -x` (name match, not `-f`) so the invoking shell's own command
+    # line can't self-match — same class of bug _remote_launch_command's
+    # pgrep comment describes, different fix since there's no ubridge PID
+    # file to check with kill -0 instead. One SSH round trip for both the
+    # PID(s) and enough detail (elapsed seconds, full command line) to
+    # report — a bare pgrep would need a second SSH call just to say
+    # anything useful about what it found.
+    return (
+        'pids="$(pgrep -x ubridge)" || exit 0\n'
+        'ps -o pid,etimes,cmd -p "$(printf %s "$pids" | tr "\\n" "," | sed "s/,$//")"'
     )
 
 
@@ -670,6 +724,121 @@ def cmd_stop(ctx: gcp.GcpContext, out=sys.stdout) -> int:
     return 0
 
 
+def cmd_upgrade(ctx: gcp.GcpContext, out=sys.stdout, dry_run: bool = False) -> int:
+    if gns3conf.gui_is_running():
+        print(
+            "The GNS3 GUI is currently running — close it first, then try again. Upgrading "
+            "stops the server it's connected to, which would drop any lab session in "
+            "progress.",
+            file=out,
+        )
+        return 1
+
+    state = _load_state()
+    key = _state_key(ctx)
+    entry = state.get(key)
+    if entry is None:
+        print(
+            f"No local record of {ctx.instance} in {ctx.project}/{ctx.zone}. Run "
+            "--enroll or --create first.",
+            file=out,
+        )
+        return 1
+
+    status = gcp.instance_status(ctx)
+    if status != "RUNNING":
+        print(
+            f"{ctx.instance} is not RUNNING (status: {status}). Run --start first — "
+            "upgrade needs the VM already up so it can SSH in and apply the new "
+            "provision.sh directly, rather than waiting on a reboot to pick up a "
+            "metadata change.",
+            file=out,
+        )
+        return 1
+
+    # Same pinned username enroll/start apply — gcloud itself never
+    # remembers it (GcpContext.ssh_user), so it has to come from state
+    # before the first SSH call below.
+    ctx.ssh_user = entry.get("ssh_user")
+
+    # This check runs even under --dry-run: a dry run of a command that
+    # doesn't apply to this VM would be misleading, not just unsafe.
+    sentinel_check = gcp.ssh_run(ctx, f"test -f {_SENTINEL_PATH}", check=False)
+    if sentinel_check.returncode != 0:
+        print(
+            f"{ctx.instance} has no {_SENTINEL_PATH} sentinel — it was not fully "
+            "provisioned by this tool's provision.sh, so upgrade doesn't apply.",
+            file=out,
+        )
+        return 1
+
+    with gcp.bundled_provision_script() as provision_sh:
+        if dry_run:
+            # No metadata push, no sentinel clear — matches provision.sh
+            # --dry-run's own contract of touching nothing.
+            gcp.scp_upload_file(ctx, provision_sh, _REMOTE_PROVISION_UPLOAD_NAME)
+            _step(out, "Running provision.sh --dry-run on the VM")
+            result = gcp.ssh_run(
+                ctx,
+                f"sudo bash {_REMOTE_PROVISION_UPLOAD_NAME} --dry-run; "
+                f"ec=$?; rm -f {_REMOTE_PROVISION_UPLOAD_NAME}; exit $ec",
+                check=False,
+                capture=False,
+                timeout=600,
+            )
+            return 0 if result.returncode == 0 else 1
+
+        # Real run only, from here down: stopping gns3server and checking
+        # for an orphaned ubridge can't happen under --dry-run, which
+        # mutates nothing and can't hit "text file busy".
+        _step(out, "Stopping gns3server")
+        gcp.ssh_run(ctx, _remote_stop_gns3server_command())
+
+        # gns3server's graceful SIGTERM (above) should stop its running
+        # nodes as part of shutting down, taking their ubridge helpers with
+        # it. An ubridge still alive after that is not a routine "someone's
+        # using it" case — it means the SIGKILL fallback was needed or
+        # gns3server had already crashed. ubridge holds cap_net_admin/
+        # cap_net_raw to manipulate taps and bridges directly, so killing
+        # it blindly doesn't guarantee kernel-side state gets cleaned up —
+        # that's a judgment call for the user, not this command.
+        orphan = gcp.ssh_run(ctx, _ubridge_orphan_check_command(), check=False)
+        if orphan.stdout and orphan.stdout.strip():
+            lines = [line for line in orphan.stdout.strip().splitlines() if line.strip()]
+            first_pid = lines[1].split()[0] if len(lines) > 1 else "?"
+            print(
+                f"Unexpected: an orphaned ubridge process (PID {first_pid}) is still "
+                "running after gns3server was stopped. This usually means gns3server "
+                "was killed uncleanly or had already crashed. Inspect it on the VM "
+                f"(ps -fp {first_pid}) and, if it's safe to end, kill it by hand, then "
+                "re-run upgrade.",
+                file=out,
+            )
+            print(orphan.stdout.strip(), file=out)
+            return 1
+
+        _step(out, "Pushing today's provision.sh as the instance's startup script")
+        gcp.add_metadata_startup_script(ctx, provision_sh)
+
+    gcp.ssh_run(ctx, f"sudo rm -f {_SENTINEL_PATH}")
+
+    # 600s, not the default 60s: a version mismatch can trigger a
+    # from-source rebuild (ubridge/VPCS), which takes far longer than a
+    # routine SSH command.
+    _step(out, "Re-running provision.sh on the VM (this can take a while on a version change)")
+    result = gcp.ssh_run(ctx, "sudo google_metadata_script_runner startup", capture=False, timeout=600)
+
+    if result.returncode == 0:
+        print(f"{ctx.instance} upgraded. Run --start to relaunch gns3server.", file=out)
+        return 0
+    print(
+        f"{ctx.instance} upgrade failed (exit {result.returncode}). Check "
+        "~/gns3server.log and the metadata script runner's own log on the VM.",
+        file=out,
+    )
+    return 1
+
+
 def cmd_status(ctx: gcp.GcpContext, out=sys.stdout) -> int:
     status = gcp.instance_status(ctx)
     if status is None:
@@ -703,6 +872,7 @@ _COMMANDS = {
     "start": cmd_start,
     "refresh": cmd_start,
     "stop": cmd_stop,
+    "upgrade": cmd_upgrade,
     "status": cmd_status,
 }
 
@@ -713,7 +883,7 @@ def main(argv=None) -> int:
     try:
         gcloud_exe = gcp.find_gcloud()
         ctx = _build_context(args, gcloud_exe, resolve_zone=command != "scan")
-        if command == "create":
+        if command in ("create", "upgrade"):
             kwargs = {"dry_run": args.dry_run}
         elif command == "enroll":
             kwargs = {"ssh_user": args.ssh_user}

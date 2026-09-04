@@ -377,6 +377,25 @@ def test_create_instance_uses_bundled_script_by_default(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# add_metadata_startup_script
+# ---------------------------------------------------------------------------
+
+
+def test_add_metadata_startup_script_builds_expected_args(monkeypatch, tmp_path):
+    ctx = make_ctx()
+    script = tmp_path / "provision.sh"
+    script.write_text("#!/usr/bin/env bash\n")
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **k: captured.update(args=args))
+    gcp.add_metadata_startup_script(ctx, script)
+    args = captured["args"]
+    assert args[:4] == ["compute", "instances", "add-metadata", "gns3-lab"]
+    assert f"--metadata-from-file=startup-script={script}" in args
+    assert "--project" in args and "proj" in args
+    assert "--zone" in args and "us-west1-b" in args
+
+
+# ---------------------------------------------------------------------------
 # start/stop
 # ---------------------------------------------------------------------------
 
@@ -544,6 +563,26 @@ def test_ssh_run_defaults_to_check_true(monkeypatch):
     assert captured["check"] is True
 
 
+def test_ssh_run_defaults_to_capture_true(monkeypatch):
+    # Regression guard: every existing caller relies on ssh_run's output
+    # being captured (e.g. cmd() reading a config file's stdout) — capture
+    # must default to True so none of them silently changes behavior now
+    # that upgrade can pass capture=False.
+    ctx = make_ctx()
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(kw))
+    gcp.ssh_run(ctx, "echo hi")
+    assert captured["capture"] is True
+
+
+def test_ssh_run_passes_capture_false_through(monkeypatch):
+    ctx = make_ctx()
+    captured = {}
+    monkeypatch.setattr(ctx, "run", lambda args, **kw: captured.update(kw))
+    gcp.ssh_run(ctx, "echo hi", capture=False)
+    assert captured["capture"] is False
+
+
 def test_ssh_run_check_false_is_passed_through(monkeypatch):
     # Needed by cli._discover_or_generate_credentials, which probes for a
     # config file that may not exist on the remote instance and must not
@@ -667,6 +706,27 @@ def test_ssh_run_multiline_on_cmd_shim_passes_check_and_timeout_to_final_ssh(mon
     assert ssh_call[0] == ["compute", "ssh"]
     assert ssh_call[1]["check"] is False
     assert ssh_call[1]["timeout"] == 45
+
+
+def test_ssh_run_multiline_on_cmd_shim_passes_capture_to_final_ssh_only(monkeypatch):
+    # Same reasoning as the check/timeout test above: the scp upload's
+    # output isn't what a capture=False caller wants shown live — only the
+    # final ssh call (running the uploaded script) should see it.
+    ctx = make_ctx(gcloud_exe="gcloud.CMD")
+    kwargs_by_call = []
+
+    def fake_run(args, **kw):
+        kwargs_by_call.append((args[:2], kw))
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(ctx, "run", fake_run)
+    gcp.ssh_run(ctx, "line one\nline two", capture=False)
+
+    scp_call, ssh_call = kwargs_by_call
+    assert scp_call[0] == ["compute", "scp"]
+    assert "capture" not in scp_call[1]
+    assert ssh_call[0] == ["compute", "ssh"]
+    assert ssh_call[1]["capture"] is False
 
 
 # ---------------------------------------------------------------------------
