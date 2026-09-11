@@ -36,6 +36,7 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gns3conf, "wrapper_local_server_conf_backup_path", lambda: tmp_path / "gns3_server.conf.bak"
     )
+    monkeypatch.setattr(gns3conf, "wrapper_log_path", lambda: tmp_path / "gns3-cloud-lab.log")
     monkeypatch.setattr(gns3conf, "gui_is_running", lambda *a, **k: False)
     return tmp_path
 
@@ -584,7 +585,7 @@ def test_start_shows_progress_dots_while_waiting_for_running(monkeypatch, tmp_pa
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     out = io.StringIO()
@@ -609,7 +610,14 @@ def test_start_happy_path_starts_refreshes_firewall_and_patches_gui(monkeypatch,
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: fw_updates.append(kw))
 
     ssh_calls = []
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: ssh_calls.append(command))
+
+    def fake_ssh_run(c, command, **k):
+        if command.startswith("test -f"):
+            return _fake_completed(returncode=0, stdout="")
+        ssh_calls.append(command)
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     out = io.StringIO()
@@ -654,7 +662,14 @@ def test_start_applies_ssh_user_saved_by_enroll(monkeypatch, tmp_path):
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: seen.append(c.ssh_user))
+
+    def fake_ssh_run(c, command, **k):
+        if command.startswith("test -f"):
+            return _fake_completed(returncode=0, stdout="")
+        seen.append(c.ssh_user)
+        return _fake_completed(returncode=0, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     assert cli.cmd_start(ctx, out=io.StringIO()) == 0
@@ -671,7 +686,7 @@ def test_start_without_ssh_user_in_state_leaves_default_behavior(monkeypatch, tm
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     assert cli.cmd_start(ctx, out=io.StringIO()) == 0
@@ -690,7 +705,7 @@ def test_start_already_running_does_not_call_start_instance(monkeypatch, tmp_pat
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     assert cli.cmd_start(ctx, out=io.StringIO()) == 0
@@ -725,6 +740,32 @@ def test_start_ssh_never_ready_fails_cleanly_without_pushing_config(monkeypatch,
     assert ssh_calls == []  # never got to setup/launch
 
 
+def test_start_refuses_when_sentinel_missing(monkeypatch, tmp_path):
+    # sshd answering only means the VM booted, not that provision.sh has
+    # finished — this is the one-shot check (not a wait) that catches start
+    # racing ahead of it, same sentinel cmd_upgrade already checks.
+    ctx = make_ctx()
+    _seed_state(tmp_path, ctx)
+    monkeypatch.setattr(gcp, "instance_status", lambda c: "RUNNING")
+    monkeypatch.setattr(gcp, "wait_for_external_ip", lambda c, **k: "34.1.2.3")
+    monkeypatch.setattr(gcp, "wait_for_ssh_ready", lambda c, **k: True)
+    monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
+    monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
+    monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
+    ssh_calls = []
+
+    def fake_ssh_run(c, command, **k):
+        ssh_calls.append(command)
+        return _fake_completed(returncode=1, stdout="")
+
+    monkeypatch.setattr(gcp, "ssh_run", fake_ssh_run)
+
+    out = io.StringIO()
+    assert cli.cmd_start(ctx, out=out) == 1
+    assert "hasn't finished provisioning" in out.getvalue()
+    assert ssh_calls == [f"test -f {cli._SENTINEL_PATH}"]  # never got to setup/launch
+
+
 def test_start_server_not_ready_returns_nonzero_but_still_writes_config(monkeypatch, tmp_path):
     ctx = make_ctx()
     _seed_state(tmp_path, ctx)
@@ -734,7 +775,7 @@ def test_start_server_not_ready_returns_nonzero_but_still_writes_config(monkeypa
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: False)
 
     out = io.StringIO()
@@ -759,7 +800,7 @@ def test_start_backs_up_existing_gui_conf_and_stop_restores_it(monkeypatch, tmp_
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     assert cli.cmd_start(ctx, out=io.StringIO()) == 0
@@ -798,7 +839,7 @@ def test_start_backs_up_existing_local_server_conf_and_stop_restores_it(monkeypa
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     assert cli.cmd_start(ctx, out=io.StringIO()) == 0
@@ -828,7 +869,7 @@ def test_start_with_no_prior_gui_conf_and_stop_removes_it(monkeypatch, tmp_path)
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
     cli.cmd_start(ctx, out=io.StringIO())
     assert (tmp_path / "gns3_gui.conf").exists()
@@ -852,7 +893,7 @@ def test_second_start_without_a_stop_does_not_reclobber_the_backup(monkeypatch, 
     monkeypatch.setattr(gcp, "get_public_ipv4", lambda: "9.9.9.9")
     monkeypatch.setattr(gcp, "firewall_rule_exists", lambda c, name: True)
     monkeypatch.setattr(gcp, "update_firewall_source_range", lambda c, **kw: None)
-    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: None)
+    monkeypatch.setattr(gcp, "ssh_run", lambda c, command, **k: _fake_completed(returncode=0, stdout=""))
     monkeypatch.setattr(gcp, "wait_for_http_ready", lambda host, port, **k: True)
 
     cli.cmd_start(ctx, out=io.StringIO())
@@ -1203,6 +1244,41 @@ def test_main_missing_gcloud_shows_setup_instructions(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "gcloud missing" in err
     assert "gcloud config configurations create" in err  # from setup_help.SETUP_INSTRUCTIONS
+
+
+def test_main_keyboard_interrupt_is_reported_cleanly(monkeypatch, capsys):
+    # Ctrl+C must never surface Python's own KeyboardInterrupt traceback —
+    # same "no stack trace, ever" bar as any other failure.
+    monkeypatch.setattr(gcp, "find_gcloud", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    rc = cli.main(["status"])
+    assert rc == 130
+    err = capsys.readouterr().err
+    assert "status interrupted by the user" in err
+    assert "Traceback" not in err
+
+
+def test_main_unexpected_exception_is_logged_not_shown(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(gcp, "find_gcloud", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    rc = cli.main(["status"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "status failed" in err
+    assert "Check the logs" in err
+    assert "boom" not in err  # the detail goes to the log, not the terminal
+    assert "Traceback" not in err
+
+    log_path = tmp_path / "gns3-cloud-lab.log"
+    assert "status failed: boom" in log_path.read_text()
+
+
+def test_main_debug_prints_failure_directly_instead_of_log_pointer(monkeypatch, capsys):
+    monkeypatch.setattr(gcp, "find_gcloud", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    rc = cli.main(["--debug", "status"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "status failed: boom" in err
+    assert "Check the logs" not in err
+    assert "Traceback" not in err
 
 
 def test_main_dispatches_to_status(monkeypatch):

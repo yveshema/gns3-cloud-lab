@@ -245,6 +245,18 @@ def test_install_packages_orders_dnsmasq_before_libvirt(sh):
     assert order.index("dnsmasq-base") < order.index("libvirt-daemon-system")
 
 
+def test_install_packages_installs_qemu_utils(sh):
+    # qemu-utils (qemu-img) is only a Recommends of qemu-system-x86, and
+    # this script installs with --no-install-recommends, so it has to be
+    # named explicitly or gns3server fails every QEMU node with "Could not
+    # find qemu-img" — see assert_qemu_img.
+    sh.stub("dpkg", exit_code=1)
+    sh.stub("apt-get")
+    result = sh.run("install_packages", dry_run=True)
+    assert result.returncode == 0
+    assert sh.called("apt-get install -s -y --no-install-recommends qemu-utils")
+
+
 def test_install_packages_marks_iptables_manual(sh):
     # The one thing an install alone can't achieve: iptables arrives as
     # docker.io's automatic dependency, so apt_install_one returns early and
@@ -522,6 +534,19 @@ def test_report_firewall_state_survives_a_failing_iptables(sh):
 # ---------------------------------------------------------------------------
 # assertions
 # ---------------------------------------------------------------------------
+
+
+def test_assert_qemu_img_passes_when_present(sh):
+    sh.stub("qemu-img")
+    result = sh.run("assert_qemu_img")
+    assert result.returncode == 0
+    assert "OK: qemu-img present" in result.stdout
+
+
+def test_assert_qemu_img_fatal_when_missing(sh):
+    result = sh.run("assert_qemu_img")
+    assert result.returncode == 1
+    assert "qemu-img not found" in result.stderr
 
 
 def test_assert_ubridge_version_accepts_the_pin(sh):

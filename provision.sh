@@ -184,8 +184,18 @@ install_packages() {
     #   `Depends: iptables | firewalld` is already satisfied by it. Naming
     #   it here is about apt's manual/auto flag, not about installing it:
     #   see the apt-mark below.
+    #
+    #   qemu-utils, for the same reason dnsmasq-base is named above: it's
+    #   only a Recommends of qemu-system-x86 (confirmed against Ubuntu
+    #   24.04's real package metadata), so --no-install-recommends leaves it
+    #   out. It provides qemu-img, which gns3server requires alongside
+    #   qemu-system-x86_64 for every QEMU node — without it, GNS3 fails a
+    #   node with "Could not find qemu-img in <dir>", naming whatever
+    #   directory the configured qemu binary lives in regardless of which
+    #   directory that is, which reads like a path-configuration problem
+    #   rather than a missing package. See assert_qemu_img below.
     local pkg
-    for pkg in qemu-system-x86 dynamips docker.io git build-essential libpcap-dev pipx \
+    for pkg in qemu-system-x86 qemu-utils dynamips docker.io git build-essential libpcap-dev pipx \
                dnsmasq-base libvirt-daemon-system libvirt-clients iptables; do
         log "installing $pkg"
         apt_install_one "$pkg"
@@ -440,6 +450,12 @@ assert_kvm() {
     log "OK: /dev/kvm present"
 }
 
+assert_qemu_img() {
+    command -v qemu-img >/dev/null 2>&1 \
+        || fatal "qemu-img not found — gns3server needs it alongside qemu-system-x86_64 for every QEMU node"
+    log "OK: qemu-img present"
+}
+
 assert_ubridge() {
     getcap "$LOCAL_BIN/ubridge" 2>/dev/null | grep -q "cap_net_admin" \
         || fatal "ubridge is missing cap_net_admin/cap_net_raw capabilities"
@@ -491,6 +507,7 @@ run_assertions() {
     assert_vpcs
     assert_dynamips
     assert_kvm
+    assert_qemu_img
     assert_ubridge
     assert_ubridge_version
     assert_libvirt

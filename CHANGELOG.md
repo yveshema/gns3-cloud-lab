@@ -1,5 +1,110 @@
 # Changelog
 
+## 2026-09-11
+
+### Fixed
+- `start` could race ahead of `provision.sh` finishing on a VM `create` just
+  built. `wait_for_ssh_ready` only confirms sshd is accepting connections —
+  it says nothing about whether the startup script has finished — so `start`
+  could reach `_remote_setup_command`'s `kvm`/`docker` group check before
+  `provision.sh`'s `apt-get install docker.io` (well into its package loop)
+  had actually run, producing "Missing required group(s): docker" on a VM
+  that was in fact provisioning correctly and would have been fine moments
+  later. Reproduced live: a real `create` followed immediately by `start`
+  hit this; a second `start` a short while after succeeded with no changes
+  in between. `kvm` never showed as missing because it's a group Ubuntu's
+  stock image ships with; `docker` is created by `docker.io`'s postinst
+  partway through the install loop, which is what exposed the timing gap.
+  Fix is a one-shot check, not a wait: `start` now checks for
+  `provision.sh`'s own completion sentinel
+  (`/var/lib/gns3-cloud-lab/provisioned`) right after SSH is confirmed and
+  before running `_remote_setup_command` — the same sentinel `upgrade`
+  already checks. Present → proceed as before. Absent → stop immediately
+  with "hasn't finished provisioning yet — wait a bit and run --start
+  again," rather than racing into a confusing group-membership error.
+  Deliberately not a poll/retry loop: enrolled VMs (adopted, not created by
+  this tool) are a separate, already-settled path and aren't a
+  consideration here.
+- `main()` let any exception outside `GcloudNotFoundError`/`GcpError` — a
+  bug, a corrupted `state.json`, an unwrapped subprocess failure, even
+  Ctrl+C — escape as a raw Python traceback. Every anticipated failure still
+  gets its own clear message as before; everything else now prints
+  `"<command> failed. Check the logs at <path>."` and appends a single line
+  (timestamp, command, the exception's own message — no traceback) to a new
+  log file (`gns3conf.wrapper_log_path()`, alongside `state.json`). Ctrl+C
+  gets its own clean `"<command> interrupted."` instead of Python's default
+  `KeyboardInterrupt` output. A new `--debug` flag prints that same
+  one-line message directly instead of pointing at the log file, still with
+  no traceback. The log write itself is wrapped so a failure to write it
+  can't produce a second, unlogged crash.
+
+### Tested
+- 5 new unit tests in `tests/test_cli.py`: `start` refuses with the sentinel
+  missing (and existing `start` tests updated for the new SSH round-trip);
+  `main()` reports a `KeyboardInterrupt` cleanly (exit 130, no traceback),
+  logs an unexpected exception's message to the log file instead of the
+  terminal, and `--debug` prints that message directly instead of pointing
+  at the log. Full suite: 248 passed.
+
+### Needs live-VM validation
+- The `start` sentinel check, against a real `create` immediately followed
+  by `start` — the exact race reported live — to confirm it now reports
+  "hasn't finished provisioning yet" instead of racing into the group
+  check.
+- The exception-handling path against a real unanticipated failure (not
+  simulated) — that the log file lands where expected on each platform and
+  that `--debug` behaves the same over a real `gcloud`-backed run.
+
+## 2026-09-10
+
+### Fixed
+- `qemu-img` was never installed on any VM `provision.sh` builds. Reported
+  from the classroom: a student's QEMU node failed with `Could not find
+  qemu-img in /usr/bin`, and re-pointing the template's qemu binary at
+  `/bin/qemu-system-x86_64` produced the same error naming `/bin` instead —
+  which looks like a path-configuration problem but isn't. Root cause,
+  confirmed against gns3-server's exact pinned source
+  (`gns3server==2.2.61`, `qemu_vm.py`'s `_get_qemu_img()`): it takes
+  `os.path.dirname()` of whatever qemu binary path is configured and does
+  `shutil.which("qemu-img", path=qemu_path_dir)` — restricted to that one
+  directory, not the full `PATH` — so changing the configured directory
+  only changes which single directory gets blamed in the error, never
+  finding the binary either way. Confirmed against Ubuntu 24.04's real
+  package metadata (`archive.ubuntu.com`'s `noble` `Packages` index, not
+  guessed): `qemu-img` ships in `qemu-utils`, which is only a `Recommends`
+  of `qemu-system-x86`, not a `Depends` — the exact same packaging trap
+  already hit once for `dnsmasq-base`/libvirt (2026-09-04 entry), and
+  `apt_install_one` installs everything with `--no-install-recommends`.
+  `qemu-utils` is now named explicitly in `install_packages`'s package
+  list, alongside a new `assert_qemu_img` (checks `command -v qemu-img`,
+  wired into `run_assertions`) so a future gap in this class fails loudly
+  in `journalctl` during provisioning rather than surfacing as a
+  student-facing GNS3 node error.
+- Audited every other package `provision.sh` installs against the same
+  Ubuntu 24.04 metadata for the same trap (Recommends that's actually
+  load-bearing but not a Depends): `dynamips`, `docker.io`, `git`,
+  `build-essential`, `libpcap-dev`, `pipx`, `dnsmasq-base`,
+  `libvirt-daemon-system`, `libvirt-clients`, `iptables`. Nothing else
+  found — the other packages' Recommends (`ca-certificates`, `patch`,
+  `less`, `ssh-client`, `dmidecode`, `mdevctl`, `parted`, `dns-root-data`,
+  `nftables`, etc.) are either already satisfied elsewhere in the list or
+  genuinely unused by anything this script or gns3server touches.
+
+### Tested
+- `shellcheck` clean and `bash -n` clean.
+- 3 new unit tests in `tests/test_provision_sh.py`: `qemu-utils` appears in
+  `install_packages`'s apt calls, and `assert_qemu_img` passes/fails
+  correctly on presence/absence of the binary. Full suite: 244 passed.
+
+### Needs live-VM validation
+- Nothing here has been run against a real VM — no `gcloud` in this dev
+  container. In particular: that `qemu-utils` actually installs cleanly
+  alongside the rest of `install_packages`'s list on a fresh Ubuntu 24.04
+  VM, and that running `upgrade` against an already-provisioned VM that
+  predates this fix actually installs `qemu-utils` and clears the error on
+  a real GNS3 QEMU node (the mechanism should work — `upgrade` re-runs the
+  full `install_packages` step — but it hasn't been observed end to end).
+
 ## 2026-09-04
 
 ### Added

@@ -117,6 +117,10 @@ def wrapper_gui_conf_backup_path() -> Path:
     return wrapper_state_dir() / "gns3_gui.conf.bak"
 
 
+def wrapper_log_path() -> Path:
+    return wrapper_state_dir() / "gns3-cloud-lab.log"
+
+
 def wrapper_local_server_conf_backup_path() -> Path:
     return wrapper_state_dir() / "gns3_server.conf.bak"
 

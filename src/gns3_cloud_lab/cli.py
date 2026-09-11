@@ -18,6 +18,7 @@ import io
 import secrets
 import shutil
 import sys
+from datetime import datetime, timezone
 
 from . import gcp, gns3conf, setup_help
 
@@ -66,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gcloud-config", default=None, help="gcloud configuration name to use for this run"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="On an unexpected failure, print what went wrong directly instead of pointing at the log file",
     )
 
     # Not required: no subcommand at all defaults to `scan` (see main()) —
@@ -650,6 +656,22 @@ def cmd_start(ctx: gcp.GcpContext, out=sys.stdout) -> int:
         print(f"{ctx.instance} is RUNNING but never accepted an SSH connection.", file=out)
         return 1
 
+    # SSH answering only means sshd is up, not that provision.sh (apt
+    # installs, building uBridge/VPCS, pipx-installing gns3-server) has
+    # finished — on a VM create just built, start can otherwise race ahead
+    # and find e.g. the docker group missing because docker.io hasn't been
+    # configured yet, which reads exactly like an unprovisioned VM even
+    # though it's just running behind. One-shot check, not a wait: either
+    # the sentinel is there or it isn't, and if not, provisioning simply
+    # hasn't finished — same sentinel cmd_upgrade already checks.
+    sentinel_check = gcp.ssh_run(ctx, f"test -f {_SENTINEL_PATH}", check=False)
+    if sentinel_check.returncode != 0:
+        print(
+            f"{ctx.instance} hasn't finished provisioning yet — wait a bit and run --start again.",
+            file=out,
+        )
+        return 1
+
     user = entry["user"]
     password = entry["password"]
     gcp.ssh_run(ctx, _remote_setup_command(user=user, password=password))
@@ -877,6 +899,18 @@ _COMMANDS = {
 }
 
 
+def _log_failure(message: str) -> None:
+    # Never let a broken log path itself surface a traceback — logging a
+    # failure must not be able to produce a second, unlogged one.
+    try:
+        log_path = gns3conf.wrapper_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()} {message}\n")
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     command = args.command or "scan"
@@ -896,6 +930,17 @@ def main(argv=None) -> int:
         return 1
     except gcp.GcpError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n{command} interrupted by the user.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        message = f"{command} failed: {exc}"
+        _log_failure(message)
+        if args.debug:
+            print(message, file=sys.stderr)
+        else:
+            print(f"{command} failed. Check the logs at {gns3conf.wrapper_log_path()}.", file=sys.stderr)
         return 1
 
 
